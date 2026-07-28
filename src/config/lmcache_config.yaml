@@ -1,0 +1,4 @@
+chunk_size: 256
+local_device: "cpu"
+max_local_cpu_size: 1  # Lowered from 10 to avoid CUDA pin_memory out of memory error
+pipelining: True

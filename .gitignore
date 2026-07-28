@@ -1,0 +1,16 @@
+# Python environments
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Ignore all files in the results directory
+results/*
+
+# But DO NOT ignore files containing ".example." in their name
+!results/*.example.*

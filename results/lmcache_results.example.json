@@ -1,0 +1,54 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B",
+  "mode": "lmcache",
+  "results": [
+    {
+      "requested_ctx": 512,
+      "actual_prompt_tokens": 561,
+      "generated_tokens": 64,
+      "cold_time_sec": 3.4183,
+      "warm_time_sec": 2.5998,
+      "speedup_factor": 1.31,
+      "throughput_tok_per_sec": 24.62,
+      "peak_alloc_mb": 3179.12,
+      "peak_reserved_mb": 3288.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 1024,
+      "actual_prompt_tokens": 1131,
+      "generated_tokens": 64,
+      "cold_time_sec": 3.3855,
+      "warm_time_sec": 2.2429,
+      "speedup_factor": 1.51,
+      "throughput_tok_per_sec": 28.53,
+      "peak_alloc_mb": 3345.7,
+      "peak_reserved_mb": 3450.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 2048,
+      "actual_prompt_tokens": 2271,
+      "generated_tokens": 64,
+      "cold_time_sec": 4.3875,
+      "warm_time_sec": 2.2106,
+      "speedup_factor": 1.98,
+      "throughput_tok_per_sec": 28.95,
+      "peak_alloc_mb": 3406.63,
+      "peak_reserved_mb": 3474.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 4096,
+      "actual_prompt_tokens": 4551,
+      "generated_tokens": 0,
+      "cold_time_sec": 0.0171,
+      "warm_time_sec": 0.0146,
+      "speedup_factor": 1.18,
+      "throughput_tok_per_sec": 0.0,
+      "peak_alloc_mb": 3239.16,
+      "peak_reserved_mb": 3328.0,
+      "status": "SUCCESS"
+    }
+  ]
+}

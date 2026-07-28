@@ -1,0 +1,22 @@
+[project]
+name = "kv-bench"
+version = "0.1.0"
+description = "Benchmarking & Reproducing KV Cache Optimization Techniques on Consumer Hardware"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "vllm==0.6.2",
+    "torch>=2.4.0",
+    "transformers==4.45.2",
+    "accelerate",
+    "pynvml",
+    "matplotlib",
+    "pandas",
+    "numpy",
+    "lmcache==0.3.10",
+    "lmcache-vllm==0.6.2.3",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+override-dependencies = ["transformers==4.45.2"]
