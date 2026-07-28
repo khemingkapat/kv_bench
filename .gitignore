@@ -14,3 +14,7 @@ results/*
 
 # But DO NOT ignore files containing ".example." in their name
 !results/*.example.*
+
+# Ignore agents directory except for AGENTS.md
+.agents/*
+!.agents/AGENTS.md
