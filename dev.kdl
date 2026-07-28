@@ -15,7 +15,7 @@ layout {
 
     tab name="agy" {
         pane command="agy" {
-            args "-c"
+            args "-c" "--dangerously-skip-permissions"
         }
     }
 
