@@ -7,6 +7,7 @@ from src.benchmark_baseline import run_benchmark as run_baseline
 from src.benchmark_lmcache import run_lmcache_benchmark as run_lmcache
 from src.benchmark_profiling import run_profiling
 from src.benchmark_disaggregation import run_sequential_disaggregation
+from src.benchmark_flexgen import run_flexgen_benchmark as run_flexgen
 
 def parse_contexts(ctx_input):
     """
@@ -28,13 +29,14 @@ DEFAULT_OUTPUTS = {
     "lmcache": "results/lmcache_phase2.json",
     "profiling": "results/profiler_trace_phase3/trace.json",
     "disaggregation": "results/disaggregation_phase4.json",
+    "flexgen": "results/flexgen.json",
 }
 
 def main():
     parser = argparse.ArgumentParser(description="KV Cache Benchmark & Profiling Router")
     parser.add_argument(
         "--mode",
-        choices=["baseline", "lmcache", "profiling", "disaggregation"],
+        choices=["baseline", "lmcache", "profiling", "disaggregation", "flexgen"],
         required=True,
         help="Benchmark mode to run"
     )
@@ -91,6 +93,8 @@ def main():
         results = []
         for ctx in contexts:
             results.extend(run_sequential_disaggregation(args.model, ctx))
+    elif args.mode == "flexgen":
+        results = run_flexgen(args.model, contexts)
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")
 
