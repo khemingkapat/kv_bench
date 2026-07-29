@@ -18,5 +18,4 @@ results/*
 # Ignore agents directory except for AGENTS.md
 .agents/*
 !.agents/AGENTS.md
-results/profiler_trace_phase3.example/
 results/profiler_trace_phase3/
