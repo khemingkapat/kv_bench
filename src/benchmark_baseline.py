@@ -1,4 +1,5 @@
 import argparse
+import os
 import json
 import time
 import torch
@@ -41,40 +42,57 @@ def run_benchmark(model_name, context_lengths, max_tokens=64, gpu_utilization=0.
                 model=model_name,
                 dtype="half", # Turing GTX 1660 SUPER (sm_75) requires FP16 instead of BF16
                 gpu_memory_utilization=gpu_utilization,
-                max_model_len=max(ctx + max_tokens + 256, 16384), # Support up to 16k context window
+                max_model_len=ctx + max_tokens + 256, # Support only required context to fit in 6GB VRAM
                 trust_remote_code=True,
                 enforce_eager=True # Eager mode for precise memory tracking on Turing consumer GPUs
             )
             
             sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
             
-            start_time = time.perf_counter()
+            start_wall = time.perf_counter()
             outputs = llm.generate([prompt_text], sampling_params)
-            end_time = time.perf_counter()
+            end_wall = time.perf_counter()
             
             output_obj = outputs[0]
             prompt_tokens = len(output_obj.prompt_token_ids)
             gen_tokens = len(output_obj.outputs[0].token_ids)
-            total_time = end_time - start_time
             
+            metrics = getattr(output_obj, "metrics", None)
+            if metrics and getattr(metrics, "first_token_time", None) and getattr(metrics, "arrival_time", None) and getattr(metrics, "finished_time", None):
+                ttft_sec = round(metrics.first_token_time - metrics.arrival_time, 4)
+                decode_time_sec = round(metrics.finished_time - metrics.first_token_time, 4)
+                total_time_sec = round(metrics.finished_time - metrics.arrival_time, 4)
+            else:
+                total_time_sec = round(end_wall - start_wall, 4)
+                ttft_sec = total_time_sec
+                decode_time_sec = 0.0
+
+            decode_tokens = gen_tokens - 1 if gen_tokens > 1 else gen_tokens
+            if decode_time_sec > 0:
+                throughput_tok_per_sec = round(decode_tokens / decode_time_sec, 2)
+            elif total_time_sec > 0:
+                throughput_tok_per_sec = round(gen_tokens / total_time_sec, 2)
+            else:
+                throughput_tok_per_sec = 0.0
+
             peak_alloc = torch.cuda.max_memory_allocated(0) / (1024 * 1024) if torch.cuda.is_available() else 0.0
             peak_res = torch.cuda.max_memory_reserved(0) / (1024 * 1024) if torch.cuda.is_available() else 0.0
             
-            tok_per_sec = gen_tokens / total_time if total_time > 0 else 0
-            
             res_entry = {
                 "requested_ctx": ctx,
-                "actual_prompt_tokens": prompt_tokens,
+                "prompt_tokens": prompt_tokens,
                 "generated_tokens": gen_tokens,
-                "total_time_sec": round(total_time, 4),
-                "throughput_tok_per_sec": round(tok_per_sec, 2),
+                "ttft_sec": ttft_sec,
+                "decode_time_sec": decode_time_sec,
+                "total_time_sec": total_time_sec,
+                "throughput_tok_per_sec": throughput_tok_per_sec,
                 "peak_alloc_mb": round(peak_alloc, 2),
                 "peak_reserved_mb": round(peak_res, 2),
                 "status": "SUCCESS"
             }
-            print(f" -> Actual Prompt Tokens: {prompt_tokens}")
+            print(f" -> Prompt Tokens: {prompt_tokens}")
             print(f" -> Peak VRAM Allocated: {peak_alloc:.2f} MB | Reserved: {peak_res:.2f} MB")
-            print(f" -> Total Time: {total_time:.3f}s ({tok_per_sec:.2f} tok/s)")
+            print(f" -> TTFT: {ttft_sec:.4f}s | Decode Time: {decode_time_sec:.4f}s | Total Time: {total_time_sec:.4f}s ({throughput_tok_per_sec:.2f} tok/s)")
             results.append(res_entry)
 
             # Cleanup vLLM worker process memory
@@ -100,10 +118,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[512, 1024, 2048, 4096, 8192])
-    parser.add_argument("--output", type=str, default="baseline_results.json")
+    parser.add_argument("--output", type=str, default="results/baseline_phase1.json")
     args = parser.parse_args()
 
     results = run_benchmark(args.model, args.contexts)
+    output_payload = {
+        "model": args.model,
+        "mode": "baseline",
+        "results": results
+    }
     with open(args.output, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"\nSaved benchmark results to {args.output}")
+        json.dump(output_payload, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    print(f"\nSaved baseline benchmark results to {args.output}")
+
