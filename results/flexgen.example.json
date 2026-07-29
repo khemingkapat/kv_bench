@@ -1,0 +1,52 @@
+{
+  "model": "Qwen/Qwen2.5-1.5B",
+  "mode": "flexgen",
+  "results": [
+    {
+      "requested_ctx": 512,
+      "prompt_tokens": 561,
+      "generated_tokens": 3,
+      "ttft_sec": 13.8602,
+      "decode_time_sec": 2.2934,
+      "total_time_sec": 16.1536,
+      "throughput_tok_per_sec": 0.87,
+      "peak_alloc_mb": 2975.11,
+      "peak_reserved_mb": 3174.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 1024,
+      "status": "FAILED",
+      "error": "Error in model execution (input dumped to /tmp/err_new_execute_model_input_20260729-214429.pkl): Unsupported input type of kv cache: unsigned char"
+    },
+    {
+      "requested_ctx": 2048,
+      "status": "FAILED",
+      "error": "Error in model execution (input dumped to /tmp/err_new_execute_model_input_20260729-214554.pkl): Unsupported input type of kv cache: unsigned char"
+    },
+    {
+      "requested_ctx": 4096,
+      "prompt_tokens": 4551,
+      "generated_tokens": 0,
+      "ttft_sec": 0.1269,
+      "decode_time_sec": 0.0,
+      "total_time_sec": 0.1269,
+      "throughput_tok_per_sec": 0.0,
+      "peak_alloc_mb": 9778.42,
+      "peak_reserved_mb": 9838.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 8192,
+      "prompt_tokens": 9101,
+      "generated_tokens": 0,
+      "ttft_sec": 0.0449,
+      "decode_time_sec": 0.0,
+      "total_time_sec": 0.0449,
+      "throughput_tok_per_sec": 0.0,
+      "peak_alloc_mb": 3005.61,
+      "peak_reserved_mb": 3226.0,
+      "status": "SUCCESS"
+    }
+  ]
+}
