@@ -13,8 +13,10 @@ __pycache__/
 results/*
 
 # But DO NOT ignore files containing ".example." in their name
-!results/*.example.*
+!results/*.example*
 
 # Ignore agents directory except for AGENTS.md
 .agents/*
 !.agents/AGENTS.md
+results/profiler_trace_phase3.example/
+results/profiler_trace_phase3/

@@ -1,0 +1,76 @@
+{
+  "model": "Qwen/Qwen2.5-1.5B",
+  "mode": "lmcache",
+  "results": [
+    {
+      "requested_ctx": 512,
+      "prompt_tokens": 573,
+      "generated_tokens": 41,
+      "cold_ttft_sec": 3.0691,
+      "warm_ttft_sec": 1.1673,
+      "ttft_speedup_factor": 2.63,
+      "cold_total_time_sec": 7.5354,
+      "warm_total_time_sec": 3.7681,
+      "total_speedup_factor": 2.0,
+      "peak_alloc_mb": 4404.9,
+      "peak_reserved_mb": 5258.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 1024,
+      "prompt_tokens": 1143,
+      "generated_tokens": 1,
+      "cold_ttft_sec": 3.16,
+      "warm_ttft_sec": 0.7148,
+      "ttft_speedup_factor": 4.42,
+      "cold_total_time_sec": 7.317,
+      "warm_total_time_sec": 0.715,
+      "total_speedup_factor": 10.23,
+      "peak_alloc_mb": 4406.08,
+      "peak_reserved_mb": 5240.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 2048,
+      "prompt_tokens": 2283,
+      "generated_tokens": 64,
+      "cold_ttft_sec": 7.2509,
+      "warm_ttft_sec": 1.5187,
+      "ttft_speedup_factor": 4.77,
+      "cold_total_time_sec": 11.4087,
+      "warm_total_time_sec": 5.7188,
+      "total_speedup_factor": 1.99,
+      "peak_alloc_mb": 4408.84,
+      "peak_reserved_mb": 5202.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 4096,
+      "prompt_tokens": 4563,
+      "generated_tokens": 0,
+      "cold_ttft_sec": 0.0167,
+      "warm_ttft_sec": 0.024,
+      "ttft_speedup_factor": 0.7,
+      "cold_total_time_sec": 0.0167,
+      "warm_total_time_sec": 0.024,
+      "total_speedup_factor": 0.7,
+      "peak_alloc_mb": 4417.82,
+      "peak_reserved_mb": 5190.0,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 8192,
+      "prompt_tokens": 9113,
+      "generated_tokens": 0,
+      "cold_ttft_sec": 0.0334,
+      "warm_ttft_sec": 0.0373,
+      "ttft_speedup_factor": 0.9,
+      "cold_total_time_sec": 0.0334,
+      "warm_total_time_sec": 0.0373,
+      "total_speedup_factor": 0.9,
+      "peak_alloc_mb": 4429.91,
+      "peak_reserved_mb": 5310.0,
+      "status": "SUCCESS"
+    }
+  ]
+}

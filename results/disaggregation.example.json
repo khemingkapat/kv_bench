@@ -1,0 +1,31 @@
+{
+  "model": "Qwen/Qwen2.5-1.5B",
+  "mode": "disaggregation",
+  "results": [
+    {
+      "requested_ctx": 512,
+      "engine_b_ttft_sec": 2.9066715240478516,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 1024,
+      "engine_b_ttft_sec": 5.3201518058776855,
+      "status": "SUCCESS"
+    },
+    {
+      "requested_ctx": 2048,
+      "engine_b_ttft_sec": 10.792068481445312,
+      "status": "SUCCESS"
+    },
+    {
+      "status": "FAILED",
+      "context": 4096,
+      "error": "Engine A failed with exit code 1"
+    },
+    {
+      "status": "FAILED",
+      "context": 8192,
+      "error": "Engine A failed with exit code 1"
+    }
+  ]
+}
