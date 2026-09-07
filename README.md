@@ -8,6 +8,8 @@ with a single harness that every technique plugs into.
 
 ```
 main.py                        CLI entry point
+docs/
+  METRICS_AND_AXES.md          Co-optimization framework, metrics, & quality evaluation
 src/core/
   axis.py                      Axis enum: STRUCTURAL / SPATIAL / TEMPORAL
   technique.py                 Technique interface every method implements
@@ -81,6 +83,8 @@ uv run main.py --technique baseline --dry-run
 | `host_rss_delta_mb` | CPU RAM added by this technique (delta from before engine init to after workload) |
 | `extra.memcpy_htod_bytes` | Bytes transferred CPU→GPU during the run (requires `--profile`) |
 | `extra.memcpy_peak_bw_gbs` | Peak PCIe bandwidth achieved (requires `--profile`) |
+
+> See [docs/METRICS_AND_AXES.md](file:///home/khemi/workspace/llm_bench/docs/METRICS_AND_AXES.md) for full metric rationales, axis mappings, and the structural quality evaluation strategy.
 
 ## Adding a new technique
 
