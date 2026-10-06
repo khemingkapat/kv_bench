@@ -29,10 +29,11 @@ Every run records a standardized [`ResultEntry`](file:///home/khemi/workspace/ll
 |---|---|---|---|
 | **Peak VRAM** | `peak_alloc_mb`, `peak_reserved_mb` | `SPATIAL`, `STRUCTURAL` | Verifies whether the technique prevents Out-Of-Memory (OOM) on consumer GPUs as context scales. |
 | **Host RAM Delta** | `host_rss_delta_mb` | `SPATIAL` | Offloading transfers memory pressure from VRAM to host DRAM. Measuring process RSS delta (after workload vs. before engine init) tracks the true system-level footprint. |
-| **Time to First Token (TTFT)** | `ttft_sec`, `cold_ttft_sec` | `TEMPORAL` | Measures the prefill latency. In prefix-reuse workloads, `cold_ttft_delta_sec = cold_ttft_sec - ttft_sec` quantifies the speedup from bypassing prompt recomputation. |
-| **Generation Throughput** | `throughput_tok_per_sec`, `decode_time_sec` | `STRUCTURAL`, `SPATIAL` | Autoregressive decoding is memory-bandwidth bound. Compressing the cache boosts throughput; unpipelined offload swapping stalls the decode loop. |
-| **PCIe Transfer Volume & Bandwidth** | `memcpy_htod_bytes`, `memcpy_peak_bw_gbs` (via `--profile`) | `SPATIAL`, `TEMPORAL` | Measures PCIe bus utilization. Confirms whether asynchronous pipelining successfully hides Host-to-Device transfers behind GPU computation. |
-| **Quality / Perplexity Delta** | `extra["ppl_delta"]`, `extra["retrieval_acc"]` | `STRUCTURAL` | Quantifies model degradation resulting from lossy compression or token eviction. |
+| **Time to First Token (TTFT)** | `ttft_sec`, `cold_ttft_sec`, `ttft_p95_sec` | `TEMPORAL` | Measures prefill latency. Reports cold vs. warm delta and P95 TTFT under 10–15 concurrent simulated users. |
+| **Throughput & Inter-Token Latency (TPOT)** | `throughput_tok_per_sec`, `tpot_mean_ms`, `tpot_p95_ms` | `STRUCTURAL`, `SPATIAL` | Autoregressive decoding is memory-bandwidth bound. Measures token generation speed and detects decode stalls/jitter. |
+| **PCIe Transfer Volume & Bandwidth** | `memcpy_bytes_per_token`, `memcpy_htod_bytes`, `memcpy_peak_bw_gbs` (via `--profile`) | `SPATIAL`, `TEMPORAL` | Measures normalized PCIe bus utilization and transfer volume per generated token. |
+| **Logit Divergence Fidelity** | `extra["top1_agreement"]`, `extra["kl_div_mean"]`, `extra["kl_div_p99"]` | `STRUCTURAL` | Compares compressed/offloaded token probability distributions against FP16 baseline. |
+| **Long-Term Memory Adherence** | `extra["longmem_acc_overall"]`, `extra["longmem_acc_<task>"]` | `STRUCTURAL` | Evaluates task-level retention on LongMemEval across 5 core capabilities. |
 
 ---
 

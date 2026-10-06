@@ -10,7 +10,10 @@ from src.core.registry import get_technique, list_techniques
 
 def parse_contexts(raw) -> list[int]:
     """Accepts space-separated (argparse nargs='+') or comma-separated input."""
-    joined = ",".join(raw) if isinstance(raw, list) else str(raw)
+    if isinstance(raw, list):
+        joined = ",".join(str(c) for c in raw)
+    else:
+        joined = str(raw)
     return [int(c) for c in joined.replace(",", " ").split() if c.strip()]
 
 
@@ -69,6 +72,24 @@ Examples:
         help="Override technique __init__ kwargs, e.g. swap_space_gb=8 cpu_offload_gb=4",
     )
     parser.add_argument(
+        "--workload",
+        choices=["default", "filler", "coldwarm", "concurrent", "longmem"],
+        default="default",
+        help="Workload pattern: default (use technique default), filler (single prompt), coldwarm (prefix reuse), concurrent (10-15 simulated users), longmem (LongMemEval adherence)",
+    )
+    parser.add_argument(
+        "--num-users",
+        type=int,
+        default=10,
+        help="Number of simulated concurrent users for --workload concurrent (default: 10)",
+    )
+    parser.add_argument(
+        "--max-vram-gb",
+        type=float,
+        default=16.0,
+        help="Simulate a maximum VRAM ceiling in GB (default: 16.0 for consumer GPU ceiling on 24GB RTX 4090)",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Wrap workload in torch.profiler; saves Chrome trace and extracts memcpy stats into results",
@@ -93,6 +114,20 @@ Examples:
     technique_kwargs = parse_technique_args(args.technique_args)
     technique_cls_instance = get_technique(args.technique, **technique_kwargs)
 
+    workload_override = None
+    if args.workload == "filler":
+        from src.core.workload import SyntheticFiller
+        workload_override = SyntheticFiller()
+    elif args.workload == "coldwarm":
+        from src.core.workload import ColdWarm
+        workload_override = ColdWarm()
+    elif args.workload == "concurrent":
+        from src.core.workload import ConcurrentChatWorkload
+        workload_override = ConcurrentChatWorkload(num_users=args.num_users)
+    elif args.workload == "longmem":
+        from src.workloads.memory_adherence import LongMemEvalWorkload
+        workload_override = LongMemEvalWorkload()
+
     contexts = parse_contexts(args.contexts)
     output_path = args.output or f"results/{args.technique}.json"
     output_dir = os.path.dirname(output_path)
@@ -108,6 +143,8 @@ Examples:
         profile=args.profile,
         profile_dir=args.profile_dir,
         dry_run=args.dry_run,
+        workload_override=workload_override,
+        max_vram_gb=args.max_vram_gb,
     )
 
     with open(output_path, "w") as f:

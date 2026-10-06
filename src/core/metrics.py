@@ -19,8 +19,15 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-import psutil
-import torch
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 # ---------------------------------------------------------------------------
@@ -29,13 +36,13 @@ import torch
 
 def reset_gpu_memory() -> None:
     gc.collect()
-    if torch.cuda.is_available():
+    if torch is not None and torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
 
 def peak_gpu_memory_mb() -> tuple[float, float]:
-    if not torch.cuda.is_available():
+    if torch is None or not torch.cuda.is_available():
         return 0.0, 0.0
     alloc = torch.cuda.max_memory_allocated(0) / (1024 * 1024)
     reserved = torch.cuda.max_memory_reserved(0) / (1024 * 1024)
@@ -49,11 +56,26 @@ def peak_gpu_memory_mb() -> tuple[float, float]:
 def host_rss_mb() -> float:
     """Current RSS of this process in MB. Call once before and once after
     the workload; subtract to get the delta attributable to the technique."""
+    if psutil is None:
+        return 0.0
     return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 2)
 
 
+def calc_percentile(values: list[float], percentile: float) -> float:
+    """Calculate the p-th percentile (0 to 100) from a list of floats."""
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    idx = (len(sorted_vals) - 1) * (percentile / 100.0)
+    floor_idx = int(idx)
+    ceil_idx = min(floor_idx + 1, len(sorted_vals) - 1)
+    weight = idx - floor_idx
+    res = sorted_vals[floor_idx] * (1.0 - weight) + sorted_vals[ceil_idx] * weight
+    return round(res, 4)
+
+
 # ---------------------------------------------------------------------------
-# Throughput
+# Throughput & Latency Helpers
 # ---------------------------------------------------------------------------
 
 def throughput(gen_tokens: int, decode_time_sec: float, total_time_sec: float) -> float:
@@ -85,10 +107,17 @@ class ResultEntry:
     total_time_sec: float = 0.0
     throughput_tok_per_sec: float = 0.0
 
+    # Inter-token latency (TPOT) & tail jitter
+    tpot_mean_ms: float = 0.0
+    tpot_p95_ms: float = 0.0
+
     # Cold-run timing -- non-zero only for ColdWarm workloads.
     # cold_ttft_delta_sec = ttft_sec - cold_ttft_sec (negative = warm is faster)
     cold_ttft_sec: float = 0.0
     cold_total_sec: float = 0.0
+
+    # Multi-user concurrency / tail TTFT
+    ttft_p95_sec: float = 0.0
 
     # GPU memory
     peak_alloc_mb: float = 0.0
@@ -97,6 +126,9 @@ class ResultEntry:
     # Host RAM delta (RSS after workload − RSS before engine init).
     # Isolates the technique's CPU-side memory cost from Python/library baseline.
     host_rss_delta_mb: float = 0.0
+
+    # Normalized PCIe transfer
+    memcpy_bytes_per_token: float = 0.0
 
     error: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)

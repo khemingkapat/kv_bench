@@ -17,7 +17,10 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from .axis import axis_names
 from .metrics import (
@@ -28,6 +31,7 @@ from .metrics import (
     throughput,
 )
 from .technique import Technique
+from .workload import Workload
 
 
 @dataclass
@@ -88,6 +92,33 @@ def _parse_memcpy_summary(trace_path: str) -> dict:
 # Main runner
 # ---------------------------------------------------------------------------
 
+def _register_custom_architectures():
+    """Register newer model architectures (like Qwen3, Qwen3.5) with Transformers and vLLM
+    if the installed library versions do not natively include them yet.
+    """
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM
+        from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
+        for model_type in ("qwen3", "qwen3_5"):
+            try:
+                AutoConfig.register(model_type, Qwen2Config)
+            except Exception:
+                pass
+        AutoModelForCausalLM.register(Qwen2Config, Qwen2ForCausalLM)
+    except Exception:
+        pass
+
+    try:
+        from vllm.model_executor.models import ModelRegistry
+        for arch in ("Qwen3ForCausalLM", "Qwen3_5ForCausalLM"):
+            try:
+                ModelRegistry.register_model(arch, "vllm.model_executor.models.qwen2:Qwen2ForCausalLM")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def run_benchmark(
     technique: Technique,
     model: str,
@@ -97,6 +128,8 @@ def run_benchmark(
     profile: bool = False,
     profile_dir: str = "results/traces",
     dry_run: bool = False,
+    workload_override: "Workload | None" = None,
+    max_vram_gb: float | None = 16.0,
 ) -> RunResult:
     """Run a technique across all requested context lengths.
 
@@ -112,16 +145,31 @@ def run_benchmark(
         profile_dir: Directory for trace files (created if absent).
         dry_run: If True, skip the actual LLM() call -- useful for verifying
             technique registration and routing without a GPU.
+        workload_override: Optional custom Workload instance to run instead of
+            technique.workload().
+        max_vram_gb: Cap VRAM to simulate consumer GPU limits (e.g. 16.0 GB)
+            when running on higher-capacity cluster cards like RTX 4090 24GB.
     """
+    _register_custom_architectures()
+
     if not dry_run:
         from vllm import LLM  # noqa: F401 -- deferred so dry-run works without vllm
 
     technique.setup()
-    workload = technique.workload()
+    workload = workload_override if workload_override is not None else technique.workload()
     axes = axis_names(technique.axes)
     entries: list[ResultEntry] = []
 
-    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU (dry-run)"
+    gpu_name = torch.cuda.get_device_name(0) if (torch is not None and torch.cuda.is_available()) else "CPU (dry-run)"
+    effective_utilization = gpu_utilization
+    if max_vram_gb is not None and torch is not None and torch.cuda.is_available():
+        total_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        if total_mem_gb > max_vram_gb:
+            cap_fraction = min(1.0, max_vram_gb / total_mem_gb)
+            torch.cuda.set_per_process_memory_fraction(cap_fraction, 0)
+            effective_utilization = round(gpu_utilization * cap_fraction, 4)
+            print(f"Hardware VRAM: {total_mem_gb:.1f} GB -> Capped to {max_vram_gb:.1f} GB (allocator cap: {cap_fraction:.3f}, vLLM utilization: {effective_utilization})")
+
     print(f"=== {technique.name} :: axes={axes} ===")
     print(f"Model: {model} | GPU: {gpu_name}" + (" [DRY RUN]" if dry_run else ""))
     print("-" * 65)
@@ -149,8 +197,8 @@ def run_benchmark(
             llm = LLM(
                 model=model,
                 dtype="half",
-                gpu_memory_utilization=gpu_utilization,
-                max_model_len=ctx + max_tokens + 256,
+                gpu_memory_utilization=effective_utilization,
+                max_model_len=int(ctx * 1.25) + max_tokens + 512,
                 trust_remote_code=True,
                 enforce_eager=True,
                 **technique.engine_kwargs(ctx, max_tokens),
@@ -168,8 +216,15 @@ def run_benchmark(
             tp = throughput(output.generated_tokens, output.decode_time_sec, output.total_time_sec)
 
             extra = technique.extra_metrics(llm, output)
+            if hasattr(output, "extra_summary") and isinstance(output.extra_summary, dict):
+                extra.update(output.extra_summary)
+            memcpy_bytes_per_token = 0.0
             if trace_path:
-                extra.update(_parse_memcpy_summary(trace_path))
+                memcpy_stats = _parse_memcpy_summary(trace_path)
+                extra.update(memcpy_stats)
+                total_memcpy = memcpy_stats.get("memcpy_htod_bytes", 0) + memcpy_stats.get("memcpy_dtoh_bytes", 0)
+                if output.generated_tokens > 0:
+                    memcpy_bytes_per_token = round(total_memcpy / output.generated_tokens, 2)
 
             entry = ResultEntry(
                 requested_ctx=ctx,
@@ -181,11 +236,15 @@ def run_benchmark(
                 decode_time_sec=output.decode_time_sec,
                 total_time_sec=output.total_time_sec,
                 throughput_tok_per_sec=tp,
+                tpot_mean_ms=output.tpot_mean_ms,
+                tpot_p95_ms=output.tpot_p95_ms,
                 cold_ttft_sec=output.cold_ttft_sec,
                 cold_total_sec=output.cold_total_sec,
+                ttft_p95_sec=output.ttft_p95_sec,
                 peak_alloc_mb=peak_alloc,
                 peak_reserved_mb=peak_reserved,
                 host_rss_delta_mb=round(rss_after - rss_before, 2),
+                memcpy_bytes_per_token=memcpy_bytes_per_token,
                 extra=extra,
             )
 
@@ -194,10 +253,17 @@ def run_benchmark(
                 if output.cold_ttft_sec > 0
                 else ""
             )
+            tail_label = (
+                f" | TTFT p95 {output.ttft_p95_sec:.3f}s"
+                if output.ttft_p95_sec != output.ttft_sec
+                else ""
+            )
             print(
                 f" -> peak VRAM {peak_alloc:.1f} MB | TTFT {output.ttft_sec:.3f}s | "
-                f"{tp:.2f} tok/s | host RSS Δ {entry.host_rss_delta_mb:+.0f} MB"
+                f"TPOT {output.tpot_mean_ms:.1f} ms | {tp:.2f} tok/s | "
+                f"host RSS Δ {entry.host_rss_delta_mb:+.0f} MB"
                 + delta_label
+                + tail_label
             )
 
         except Exception as e:  # noqa: BLE001 -- a failed context length shouldn't kill the sweep
