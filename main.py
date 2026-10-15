@@ -54,10 +54,10 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  uv run main.py --technique baseline --model Qwen/Qwen2.5-1.5B --contexts 512 1024 2048
+  uv run main.py --technique baseline --model qwen3-4b --contexts 512 1024 2048
+  uv run main.py --technique baseline --model phi4-mini --dry-run
   uv run main.py --technique flexgen_style --contexts 4096 --technique-args swap_space_gb=8
   uv run main.py --technique lmcache --contexts 2048 --profile
-  uv run main.py --technique baseline --dry-run   # verify routing without a GPU
 """,
     )
     parser.add_argument("--technique", required=True, help=f"one of: {', '.join(available)}")

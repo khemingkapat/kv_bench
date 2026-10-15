@@ -23,6 +23,7 @@ except ImportError:
     torch = None
 
 from .axis import axis_names
+from .config import resolve_model_target
 from .metrics import (
     ResultEntry,
     host_rss_mb,
@@ -170,8 +171,11 @@ def run_benchmark(
             effective_utilization = round(gpu_utilization * cap_fraction, 4)
             print(f"Hardware VRAM: {total_mem_gb:.1f} GB -> Capped to {max_vram_gb:.1f} GB (allocator cap: {cap_fraction:.3f}, vLLM utilization: {effective_utilization})")
 
+    target_model, model_revision, model_extra_args = resolve_model_target(model)
+
     print(f"=== {technique.name} :: axes={axes} ===")
-    print(f"Model: {model} | GPU: {gpu_name}" + (" [DRY RUN]" if dry_run else ""))
+    rev_str = f" (revision: {model_revision[:8]})" if model_revision else ""
+    print(f"Model: {target_model}{rev_str} | GPU: {gpu_name}" + (" [DRY RUN]" if dry_run else ""))
     print("-" * 65)
 
     for ctx in contexts:
@@ -194,14 +198,20 @@ def run_benchmark(
 
             from vllm import LLM
 
+            engine_kwargs = dict(technique.engine_kwargs(ctx, max_tokens))
+            if model_revision is not None:
+                engine_kwargs.setdefault("revision", model_revision)
+
+            dtype_choice = "bfloat16" if (torch is not None and torch.cuda.is_bf16_supported()) else "half"
+
             llm = LLM(
-                model=model,
-                dtype="half",
+                model=target_model,
+                dtype=dtype_choice,
                 gpu_memory_utilization=effective_utilization,
                 max_model_len=int(ctx * 1.25) + max_tokens + 512,
                 trust_remote_code=True,
                 enforce_eager=True,
-                **technique.engine_kwargs(ctx, max_tokens),
+                **engine_kwargs,
             )
 
             if profile:
