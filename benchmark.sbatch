@@ -47,7 +47,8 @@ echo "========================================="
 # --max-vram-gb 16 enforces the consumer hardware ceiling (both in PyTorch's
 # allocator and vLLM's KV allocation pool) so results strictly mirror 16GB VRAM.
 
-MODEL="${1:-Qwen/Qwen2.5-3B-Instruct}"
+# Default to primary pure dense model (qwen3-4b); accepts aliases (phi4-mini, qwen3.5-4b, etc.)
+MODEL="${1:-qwen3-4b}"
 CONTEXTS="512 1024 2048 4096 8192 16384"
 EVAL_CONTEXTS="512 1024 2048 4096"
 

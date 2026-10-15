@@ -5,19 +5,19 @@ description = "Unified benchmarking pipeline for KV-cache optimization technique
 readme = "README.md"
 requires-python = ">=3.10,<3.12"
 dependencies = [
-    "vllm==0.6.2",
+    "vllm>=0.20.0",
     "torch>=2.4.0",
-    "transformers==4.45.2",
+    "transformers>=4.45.2",
     "accelerate",
     "pynvml",
     "psutil",        # host RSS measurement (CPU RAM used by offloaded KV cache)
     "matplotlib",
     "pandas",
     "numpy",
-    "lmcache==0.3.10",
-    "lmcache-vllm==0.6.2.3",
+    "lmcache>=0.5.0",
+    "flash-linear-attention",
+    "causal-conv1d>=1.5.0",
 ]
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
-override-dependencies = ["transformers==4.45.2"]
