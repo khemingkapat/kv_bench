@@ -76,10 +76,13 @@ uv run python -m unittest discover tests
 ```
 
 ### Stage 3: Slurm Batch Verification (HPC Cluster)
-When running on the cluster, submit jobs via `sbatch` and confirm execution finishes with exit code 0:
-```bash
-sbatch benchmark.sbatch
-```
+When running on the Slurm cluster:
+1. Log in to the cluster and copy (`scp`) the relevant project files (`src/`, `tests/`, `main.py`, `benchmark.sbatch`, `pyproject.toml`, `uv.lock`) to your cluster workspace.
+2. Submit the batch job via `sbatch` and wait for execution to finish with exit code 0:
+   ```bash
+   sbatch benchmark.sbatch
+   ```
+3. Retrieve the resulting `results/*.json` metrics and `slurm-*.log` output.
 
 ---
 
@@ -90,3 +93,4 @@ sbatch benchmark.sbatch
   * `--max-vram-gb 8.0` on local RTX 4060 machines.
 * **Model Integrity:** All benchmarks strictly evaluate unmodified base weights in FP16/BF16. Base weights must never be quantized with AWQ/GPTQ/GGUF—the research focus is exclusively on the KV cache.
 * **Model Specs & Aliases:** Always resolve models through [`src/core/config.py`](file:///home/khemi/workspace/kv_bench/src/core/config.py) using pinned Hugging Face commit SHAs and registered aliases (`qwen3-4b`, `phi4-mini`, `qwen3.5-4b`, `qwen3-1.7b`).
+
