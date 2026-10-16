@@ -72,6 +72,51 @@ class TestModelRegistry(unittest.TestCase):
         self.assertIsNone(custom_rev)
         self.assertEqual(custom_extra, ())
 
+    def test_parse_extra_vllm_args(self):
+        from src.core.harness import _parse_extra_vllm_args
+
+        self.assertEqual(_parse_extra_vllm_args(()), {})
+        self.assertEqual(
+            _parse_extra_vllm_args(("--language-model-only", "--mamba-cache-mode", "align")),
+            {"language_model_only": True, "mamba_cache_mode": "align"},
+        )
+
+    def test_verify_mode_dry_run(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = f"{tmpdir}/verify_out.json"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "main.py",
+                    "--technique",
+                    "baseline",
+                    "--model",
+                    "qwen3-4b",
+                    "--verify",
+                    "--dry-run",
+                    "--max-vram-gb",
+                    "16.0",
+                    "--output",
+                    out_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertIn("[VERIFY OK]", proc.stdout)
+            with open(out_path, "r") as f:
+                data = json.load(f)
+            self.assertEqual(len(data["results"]), 1)
+            self.assertEqual(data["results"][0]["requested_ctx"], 128)
+            self.assertEqual(data["results"][0]["status"], "DRY_RUN")
+            self.assertEqual(data["results"][0]["extra"]["max_vram_gb"], 16.0)
+
 
 if __name__ == "__main__":
     unittest.main()

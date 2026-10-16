@@ -93,31 +93,23 @@ def _parse_memcpy_summary(trace_path: str) -> dict:
 # Main runner
 # ---------------------------------------------------------------------------
 
-def _register_custom_architectures():
-    """Register newer model architectures (like Qwen3, Qwen3.5) with Transformers and vLLM
-    if the installed library versions do not natively include them yet.
-    """
-    try:
-        from transformers import AutoConfig, AutoModelForCausalLM
-        from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
-        for model_type in ("qwen3", "qwen3_5"):
-            try:
-                AutoConfig.register(model_type, Qwen2Config)
-            except Exception:
-                pass
-        AutoModelForCausalLM.register(Qwen2Config, Qwen2ForCausalLM)
-    except Exception:
-        pass
-
-    try:
-        from vllm.model_executor.models import ModelRegistry
-        for arch in ("Qwen3ForCausalLM", "Qwen3_5ForCausalLM"):
-            try:
-                ModelRegistry.register_model(arch, "vllm.model_executor.models.qwen2:Qwen2ForCausalLM")
-            except Exception:
-                pass
-    except Exception:
-        pass
+def _parse_extra_vllm_args(extra_args: tuple[str, ...]) -> dict:
+    """Convert CLI-style extra_vllm_args from ModelSpec into LLM() keyword arguments."""
+    kwargs: dict = {}
+    i = 0
+    while i < len(extra_args):
+        arg = extra_args[i]
+        if arg.startswith("--"):
+            key = arg[2:].replace("-", "_")
+            if i + 1 < len(extra_args) and not extra_args[i + 1].startswith("--"):
+                kwargs[key] = extra_args[i + 1]
+                i += 2
+            else:
+                kwargs[key] = True
+                i += 1
+        else:
+            i += 1
+    return kwargs
 
 
 def run_benchmark(
@@ -151,7 +143,11 @@ def run_benchmark(
         max_vram_gb: Cap VRAM to simulate consumer GPU limits (e.g. 16.0 GB)
             when running on higher-capacity cluster cards like RTX 4090 24GB.
     """
-    _register_custom_architectures()
+    # Keep vLLM V1 EngineCore in-process so torch.cuda.set_per_process_memory_fraction,
+    # torch.cuda.max_memory_allocated, and torch.profiler apply to the GPU worker.
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    # Avoid FlashInfer JIT sampling compilation against older system nvcc (e.g. CUDA 12.2)
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
     if not dry_run:
         from vllm import LLM  # noqa: F401 -- deferred so dry-run works without vllm
@@ -163,6 +159,7 @@ def run_benchmark(
 
     gpu_name = torch.cuda.get_device_name(0) if (torch is not None and torch.cuda.is_available()) else "CPU (dry-run)"
     effective_utilization = gpu_utilization
+    total_mem_gb = 0.0
     if max_vram_gb is not None and torch is not None and torch.cuda.is_available():
         total_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         if total_mem_gb > max_vram_gb:
@@ -172,6 +169,7 @@ def run_benchmark(
             print(f"Hardware VRAM: {total_mem_gb:.1f} GB -> Capped to {max_vram_gb:.1f} GB (allocator cap: {cap_fraction:.3f}, vLLM utilization: {effective_utilization})")
 
     target_model, model_revision, model_extra_args = resolve_model_target(model)
+    extra_model_kwargs = _parse_extra_vllm_args(model_extra_args)
 
     print(f"=== {technique.name} :: axes={axes} ===")
     rev_str = f" (revision: {model_revision[:8]})" if model_revision else ""
@@ -185,22 +183,25 @@ def run_benchmark(
         llm = None
 
         try:
+            engine_kwargs = dict(technique.engine_kwargs(ctx, max_tokens))
+            for k, v in extra_model_kwargs.items():
+                engine_kwargs.setdefault(k, v)
+            if model_revision is not None:
+                engine_kwargs.setdefault("revision", model_revision)
+
             if dry_run:
                 # Emit a synthetic SUCCESS entry so callers get a parseable result.
                 entry = ResultEntry(
                     requested_ctx=ctx,
                     status="DRY_RUN",
                     axes=axes,
+                    extra={"max_vram_gb": max_vram_gb} if max_vram_gb is not None else {},
                 )
-                print(f" -> DRY RUN OK (engine kwargs: {technique.engine_kwargs(ctx, max_tokens)})")
+                print(f" -> DRY RUN OK (engine kwargs: {engine_kwargs})")
                 entries.append(entry)
                 continue
 
             from vllm import LLM
-
-            engine_kwargs = dict(technique.engine_kwargs(ctx, max_tokens))
-            if model_revision is not None:
-                engine_kwargs.setdefault("revision", model_revision)
 
             dtype_choice = "bfloat16" if (torch is not None and torch.cuda.is_bf16_supported()) else "half"
 
@@ -226,6 +227,11 @@ def run_benchmark(
             tp = throughput(output.generated_tokens, output.decode_time_sec, output.total_time_sec)
 
             extra = technique.extra_metrics(llm, output)
+            if max_vram_gb is not None:
+                extra["max_vram_gb"] = max_vram_gb
+                extra["effective_gpu_utilization"] = effective_utilization
+                if total_mem_gb > 0:
+                    extra["hardware_vram_gb"] = round(total_mem_gb, 2)
             if hasattr(output, "extra_summary") and isinstance(output.extra_summary, dict):
                 extra.update(output.extra_summary)
             memcpy_bytes_per_token = 0.0
