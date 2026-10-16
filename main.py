@@ -105,9 +105,14 @@ Examples:
         help="Skip LLM() construction -- verifies technique registration and routing without a GPU",
     )
     parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Fast verification mode: run a single short prompt (128 ctx, 16 tokens) to verify CUDA memory capping and clean engine initialization",
+    )
+    parser.add_argument(
         "--output",
         default=None,
-        help="Output JSON path (default: results/<technique>.json)",
+        help="Output JSON path (default: results/<technique>.json or results/verify_<technique>.json)",
     )
     args = parser.parse_args()
 
@@ -115,7 +120,7 @@ Examples:
     technique_cls_instance = get_technique(args.technique, **technique_kwargs)
 
     workload_override = None
-    if args.workload == "filler":
+    if args.workload == "filler" or (args.verify and args.workload == "default"):
         from src.core.workload import SyntheticFiller
         workload_override = SyntheticFiller()
     elif args.workload == "coldwarm":
@@ -128,8 +133,16 @@ Examples:
         from src.workloads.memory_adherence import LongMemEvalWorkload
         workload_override = LongMemEvalWorkload()
 
-    contexts = parse_contexts(args.contexts)
-    output_path = args.output or f"results/{args.technique}.json"
+    if args.verify:
+        contexts = [128]
+        max_tokens = 16
+        default_output = f"results/verify_{args.technique}.json"
+    else:
+        contexts = parse_contexts(args.contexts)
+        max_tokens = args.max_tokens
+        default_output = f"results/{args.technique}.json"
+
+    output_path = args.output or default_output
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -138,7 +151,7 @@ Examples:
         technique_cls_instance,
         args.model,
         contexts,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         gpu_utilization=args.gpu_utilization,
         profile=args.profile,
         profile_dir=args.profile_dir,
@@ -154,14 +167,45 @@ Examples:
 
     print(f"\nSaved {args.technique} results -> {output_path}")
 
+    exit_code = 0
+    if args.verify:
+        failed_entries = [r for r in run_result.results if r.status == "FAILED"]
+        if failed_entries:
+            print(f"[VERIFY FAILED] Engine failed on {len(failed_entries)} context(s): {failed_entries[0].error}", file=sys.stderr)
+            exit_code = 1
+        elif not args.dry_run:
+            entry = run_result.results[0]
+            vram_cap_mb = (args.max_vram_gb * 1024.0) if args.max_vram_gb else float("inf")
+            if entry.generated_tokens <= 0:
+                print("[VERIFY FAILED] Engine generated 0 tokens.", file=sys.stderr)
+                exit_code = 1
+            elif entry.peak_alloc_mb > vram_cap_mb:
+                print(
+                    f"[VERIFY FAILED] Peak VRAM {entry.peak_alloc_mb:.1f} MB exceeded cap {vram_cap_mb:.1f} MB.",
+                    file=sys.stderr,
+                )
+                exit_code = 1
+            else:
+                print(
+                    f"[VERIFY OK] Clean engine init | generated {entry.generated_tokens} tokens | "
+                    f"peak VRAM {entry.peak_alloc_mb:.1f} MB <= {vram_cap_mb:.1f} MB cap"
+                )
+        else:
+            print(f"[VERIFY OK] Dry-run verification passed (contexts={contexts}, max_tokens={max_tokens}).")
+    elif run_result.results and all(r.status == "FAILED" for r in run_result.results):
+        print("[BENCHMARK FAILED] All context lengths failed.", file=sys.stderr)
+        exit_code = 1
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+
     if args.dry_run:
-        # Use normal sys.exit in dry-run so CI gets a clean 0 and we don't
-        # swallow real failures. os._exit(0) bypasses Python cleanup and would
-        # mask any exception that happened before this point.
-        sys.exit(0)
+        # Use normal sys.exit in dry-run so CI gets a clean exit and we don't
+        # swallow real failures. os._exit() bypasses Python cleanup.
+        sys.exit(exit_code)
 
     # vLLM spawns background threads that can hang a clean process exit.
-    os._exit(0)
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":
