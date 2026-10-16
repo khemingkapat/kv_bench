@@ -21,4 +21,5 @@ results/*
 results/profiler_trace_phase3/
 
 *.ignore.*
+logs/
 slurm-*.log

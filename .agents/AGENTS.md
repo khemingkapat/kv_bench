@@ -82,7 +82,7 @@ When running on the Slurm cluster:
    ```bash
    sbatch benchmark.sbatch
    ```
-3. Retrieve the resulting `results/*.json` metrics and `slurm-*.log` output.
+3. Retrieve the resulting `results/*.json` metrics and `logs/slurm-*.log` output.
 
 ---
 
