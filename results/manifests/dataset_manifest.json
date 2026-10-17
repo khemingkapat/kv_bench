@@ -1,0 +1,72 @@
+{
+  "manifest_version": "1.0",
+  "generated_at": "2026-10-17T03:32:35.840893+00:00",
+  "is_dry_run": false,
+  "datasets": {
+    "longmemeval": {
+      "name": "LongMemEval",
+      "role": "High-Level Long-Term Memory Adherence (5 capabilities)",
+      "upstream": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json",
+      "file": {
+        "path": "data/longmemeval/longmemeval_benchmark.json",
+        "sha256": "32476adc722c2efeffc0340f6daed2c8753f409b02dfadeae1cd49dac9836ab6",
+        "size_bytes": 1462425,
+        "sample_count": 50,
+        "task_distribution": {
+          "fact_recall": 10,
+          "cross_session_reasoning": 10,
+          "information_update": 10,
+          "relative_timeframe": 10,
+          "unanswerable_refusal": 10
+        }
+      }
+    },
+    "pg19": {
+      "name": "PG-19",
+      "role": "Low-Level Continuous Long-Context Stream (up to 32K tokens)",
+      "upstream": "https://storage.googleapis.com/deepmind-gutenberg/test",
+      "files": [
+        {
+          "path": "data/pg19/book_10146.txt",
+          "book_id": "10146",
+          "sha256": "f8dd4334fd8d422cd2f9153ffbff9b097611569592d7ca09fc6fe7881336d331",
+          "size_bytes": 253872,
+          "word_count": 43024,
+          "approx_tokens": 55931
+        },
+        {
+          "path": "data/pg19/book_10321.txt",
+          "book_id": "10321",
+          "sha256": "fedcb2723c2ad091f76d45eb98efd810977e7b906f6fd8cbd815734d1e90c456",
+          "size_bytes": 324979,
+          "word_count": 53847,
+          "approx_tokens": 70001
+        },
+        {
+          "path": "data/pg19/book_10356.txt",
+          "book_id": "10356",
+          "sha256": "af4b57d358448588adbc6da962cad655bf586ae746dba21f62e956d36d97c88e",
+          "size_bytes": 314879,
+          "word_count": 52035,
+          "approx_tokens": 67645
+        },
+        {
+          "path": "data/pg19/book_10762.txt",
+          "book_id": "10762",
+          "sha256": "fcc71b161311d4854a078f8cdda6e4381542536167145f6dfdda84bcad256d5f",
+          "size_bytes": 348606,
+          "word_count": 58360,
+          "approx_tokens": 75868
+        },
+        {
+          "path": "data/pg19/book_12204.txt",
+          "book_id": "12204",
+          "sha256": "e1c79655be744bc89fd291f84b77ddb1819d117f2bba142373f94d5ab309d0d0",
+          "size_bytes": 24408,
+          "word_count": 4543,
+          "approx_tokens": 5905
+        }
+      ]
+    }
+  }
+}

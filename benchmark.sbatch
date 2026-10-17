@@ -41,6 +41,9 @@ fi
 uv --version
 uv sync --frozen
 
+echo ">> Running Automated Test Suite on Compute Node..."
+uv run --no-sync python -m unittest discover tests
+
 echo "========================================="
 echo "=== KV-Bench Suite (Capped at 16GB)   ==="
 echo "========================================="
