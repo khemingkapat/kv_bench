@@ -18,8 +18,14 @@ from typing import Any
 from src.core.metrics import calc_percentile
 from src.core.workload import Workload, WorkloadOutput
 
-DEFAULT_DATASET_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "data", "longmemeval_subset.json"
+BENCHMARK_DATASET_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "data", "longmemeval", "longmemeval_benchmark.json")
+)
+FALLBACK_DATASET_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "longmemeval_subset.json")
+)
+DEFAULT_DATASET_PATH = (
+    BENCHMARK_DATASET_PATH if os.path.exists(BENCHMARK_DATASET_PATH) else FALLBACK_DATASET_PATH
 )
 
 REFUSAL_TRIGGERS = [

@@ -11,6 +11,7 @@ and its score would flow into ResultEntry.extra via Technique.extra_metrics().
 
 from __future__ import annotations
 
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -50,6 +51,23 @@ class Workload(ABC):
 
 def _make_prompt(context_length: int) -> str:
     return FILLER_SENTENCE * max(1, context_length // 10)
+
+
+def load_continuous_prefix(context_length: int, pg19_dir: str | None = None) -> str:
+    """Load a continuous natural text passage from staged PG-19 books,
+    falling back to synthetic filler if unavailable."""
+    if pg19_dir is None:
+        pg19_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "pg19"))
+    if os.path.isdir(pg19_dir):
+        files = sorted([os.path.join(pg19_dir, f) for f in os.listdir(pg19_dir) if f.endswith(".txt")])
+        if files:
+            with open(files[0], "r", encoding="utf-8", errors="ignore") as f:
+                words = f.read().split()
+                target_words = max(10, int(context_length / 1.3))
+                if len(words) >= target_words:
+                    return " ".join(words[:target_words])
+                return " ".join(words)
+    return _make_prompt(context_length)
 
 
 def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:

@@ -14,6 +14,8 @@ results/*
 
 # But DO NOT ignore files containing ".example." in their name
 !results/*.example*
+!results/manifests/
+!results/manifests/*
 
 # Ignore agents directory except for AGENTS.md
 .agents/*
@@ -23,3 +25,6 @@ results/profiler_trace_phase3/
 *.ignore.*
 logs/
 slurm-*.log
+
+# Staged datasets (downloaded locally via scripts/download_datasets.py)
+data/
