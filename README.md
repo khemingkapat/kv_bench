@@ -59,6 +59,32 @@ uv run main.py --technique flexgen_style --contexts 2048 --profile
 uv run main.py --technique baseline --dry-run
 ```
 
+## Dataset Ingestion & Staging (`scripts/download_datasets.py`)
+
+To prevent repository bloat, evaluation datasets (`data/`) are **git-ignored** and not tracked directly in git. Developers and cluster runners download and stage the corpora locally via the automated ingestion script:
+
+```bash
+# Download and preprocess all evaluation datasets (LongMemEval + PG-19)
+uv run python scripts/download_datasets.py
+
+# Download only a specific dataset
+uv run python scripts/download_datasets.py --dataset longmemeval
+uv run python scripts/download_datasets.py --dataset pg19
+
+# Offline / dry-run mode (generates mock data without network calls for CI testing)
+uv run python scripts/download_datasets.py --dry-run
+```
+
+### Staged Evaluation Corpora:
+1. **LongMemEval (`data/longmemeval/longmemeval_benchmark.json`)**:
+   - Structured multi-turn dialogues evaluating **Long-Term Memory Adherence** across 5 core capabilities: *Fact Recall*, *Cross-Session Reasoning*, *Information Update*, *Relative Timeframe*, and *Unanswerable Question Refusal*.
+   - A committed lightweight subset is also preserved at [`src/data/longmemeval_subset.json`](file:///home/khemi/workspace/kv_bench/src/data/longmemeval_subset.json) as a zero-setup fallback.
+2. **PG-19 (`data/pg19/`)**:
+   - Curated continuous long-context books from Project Gutenberg (each 55K–75K tokens) used to feed natural text streams into context sweeps ($512 \rightarrow 32\text{K}$) and low-level logit divergence checks.
+
+### Provenance Manifest:
+Every run automatically computes SHA-256 checksums, word counts, and upstream URLs, writing the tracked provenance manifest to [`results/manifests/dataset_manifest.json`](file:///home/khemi/workspace/kv_bench/results/manifests/dataset_manifest.json).
+
 ## Comparative Reporting (`compare.py`)
 
 Compare any optimization technique against the uncompressed baseline:

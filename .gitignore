@@ -25,3 +25,6 @@ results/profiler_trace_phase3/
 *.ignore.*
 logs/
 slurm-*.log
+
+# Staged datasets (downloaded locally via scripts/download_datasets.py)
+data/
