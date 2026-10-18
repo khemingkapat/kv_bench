@@ -2,17 +2,21 @@
 """Theoretical Capacity & Roofline Modeling for KV-Cache Optimization.
 
 Analytically models:
-1. GQA KV-cache memory footprint per token and total allocation.
-2. Usable KV headroom and theoretical Out-Of-Memory (OOM) context cliffs under
-   consumer hardware VRAM constraints (e.g. 16.0 GB on RTX 4090, 8.0 GB on RTX 4060).
+1. GQA KV-cache memory footprint per token and total allocation in exact binary GiB (1024^3).
+2. Two-tier hardware memory boundaries under consumer GPU constraints:
+   - Tier 1: Process allocator ceiling (e.g. 16.0 GiB on RTX 4090, 8.0 GiB on RTX 4060).
+   - Tier 2: vLLM PagedAttention KV pool ceiling governed by `gpu_memory_utilization`
+     (default 0.85 = 13.60 GiB budget), subtracting static weights, CUDA context,
+     and peak activation buffers.
 3. Roofline latency & throughput bounds:
-   - Decode phase: Memory bandwidth bound (TPOT min, max tokens/sec).
-   - Prefill phase: Compute bound (TTFT min).
+   - Decode phase: Memory bandwidth bound (TPOT min ms, peak tokens/sec,
+     TPOT latency increase %, and throughput reduction %).
+   - Prefill phase: Compute bound with FlashAttention-2 causal masking (TTFT min ms).
 4. Analytical empirical test matrix categorizing test points into:
-   - Sub-critical (weight-dominated)
+   - Sub-critical (weight-dominated, linear throughput)
    - Inflection (memory bus saturation begins)
-   - Cliff edge (approaching VRAM limit)
-   - Over-the-cliff (deterministic OOM verification)
+   - Cliff edge (approaching vLLM pool limit)
+   - Over-the-cliff (deterministic OOM / pool exhaustion verification)
 """
 
 from __future__ import annotations
@@ -37,16 +41,18 @@ from src.core.config import MODEL_REGISTRY, ModelSpec, get_model_spec
 HARDWARE_PRESETS = {
     "rtx4090_16gb": {
         "name": "NVIDIA GeForce RTX 4090 (16GB Cap)",
-        "vram_cap_gb": 16.0,
-        "runtime_overhead_gb": 0.80,
+        "vram_cap_gib": 16.0,
+        "gpu_utilization": 0.85,
+        "runtime_overhead_gib": 0.80,  # non-torch CUDA context (~0.20-0.27 GiB) + activation buffer (~0.55-0.60 GiB)
         "memory_bw_gbs": 1008.0,
         "tflops_bf16": 82.6,
         "pcie_empirical_bw_gbs": 25.5,
     },
     "rtx4060_8gb": {
         "name": "NVIDIA GeForce RTX 4060 (8GB Local)",
-        "vram_cap_gb": 8.0,
-        "runtime_overhead_gb": 0.60,
+        "vram_cap_gib": 8.0,
+        "gpu_utilization": 0.85,
+        "runtime_overhead_gib": 0.60,
         "memory_bw_gbs": 272.0,
         "tflops_bf16": 18.0,
         "pcie_empirical_bw_gbs": 14.0,
@@ -58,13 +64,16 @@ HARDWARE_PRESETS = {
 class MemoryBreakdown:
     context_len: int
     num_users: int
-    weights_gb: float
-    runtime_overhead_gb: float
-    kv_cache_gb: float
-    total_memory_gb: float
-    vram_cap_gb: float
-    headroom_remaining_gb: float
-    is_oom: bool
+    weights_gib: float
+    runtime_overhead_gib: float
+    kv_cache_gib: float
+    total_memory_gib: float
+    vram_cap_gib: float
+    vllm_budget_gib: float
+    headroom_cap_gib: float
+    headroom_vllm_pool_gib: float
+    is_oom_cap: bool
+    is_oom_vllm_pool: bool
     kv_fraction_of_total: float
 
 
@@ -76,9 +85,23 @@ class RooflinePoint:
     total_bytes_read_per_step: int
     decode_step_latency_ms: float
     decode_throughput_tok_per_sec: float
+    tpot_latency_increase_pct: float
+    throughput_reduction_pct: float
     prefill_flops: float
     prefill_min_ttft_sec: float
-    decode_slowdown_vs_zero_ctx_pct: float
+
+
+def get_weights_bytes(spec: ModelSpec) -> int:
+    """Return exact model weights size in bytes.
+
+    spec.weight_size_gb is stored in decimal GB (10^9 bytes), e.g. 8.06 GB = 8.06e9 bytes.
+    """
+    return int(spec.weight_size_gb * 1e9)
+
+
+def get_weights_gib(spec: ModelSpec) -> float:
+    """Return model weights size in binary GiB (1024^3 bytes)."""
+    return get_weights_bytes(spec) / (1024**3)
 
 
 def calculate_kv_bytes_per_token(spec: ModelSpec) -> int:
@@ -94,30 +117,39 @@ def calculate_memory_breakdown(
     spec: ModelSpec,
     context_len: int,
     num_users: int = 1,
-    vram_cap_gb: float = 16.0,
-    runtime_overhead_gb: float = 0.80,
+    vram_cap_gib: float = 16.0,
+    gpu_utilization: float = 0.85,
+    runtime_overhead_gib: float = 0.80,
 ) -> MemoryBreakdown:
-    """Calculate detailed memory footprint for a given model, context length, and concurrency."""
+    """Calculate detailed memory footprint against both process cap and vLLM KV pool."""
     kv_bytes_per_tok = calculate_kv_bytes_per_token(spec)
     total_kv_bytes = kv_bytes_per_tok * context_len * num_users
-    kv_cache_gb = total_kv_bytes / (1024**3)
+    kv_cache_gib = total_kv_bytes / (1024**3)
 
-    weights_gb = spec.weight_size_gb
-    total_memory_gb = weights_gb + runtime_overhead_gb + kv_cache_gb
-    headroom = vram_cap_gb - total_memory_gb
-    is_oom = total_memory_gb > vram_cap_gb
-    kv_fraction = kv_cache_gb / total_memory_gb if total_memory_gb > 0 else 0.0
+    weights_gib = get_weights_gib(spec)
+    total_memory_gib = weights_gib + runtime_overhead_gib + kv_cache_gib
+    vllm_budget_gib = vram_cap_gib * gpu_utilization
+
+    headroom_cap = vram_cap_gib - total_memory_gib
+    headroom_vllm = vllm_budget_gib - total_memory_gib
+
+    is_oom_cap = total_memory_gib > vram_cap_gib
+    is_oom_vllm_pool = total_memory_gib > vllm_budget_gib
+    kv_fraction = kv_cache_gib / total_memory_gib if total_memory_gib > 0 else 0.0
 
     return MemoryBreakdown(
         context_len=context_len,
         num_users=num_users,
-        weights_gb=round(weights_gb, 3),
-        runtime_overhead_gb=round(runtime_overhead_gb, 3),
-        kv_cache_gb=round(kv_cache_gb, 3),
-        total_memory_gb=round(total_memory_gb, 3),
-        vram_cap_gb=round(vram_cap_gb, 3),
-        headroom_remaining_gb=round(headroom, 3),
-        is_oom=is_oom,
+        weights_gib=round(weights_gib, 3),
+        runtime_overhead_gib=round(runtime_overhead_gib, 3),
+        kv_cache_gib=round(kv_cache_gib, 3),
+        total_memory_gib=round(total_memory_gib, 3),
+        vram_cap_gib=round(vram_cap_gib, 3),
+        vllm_budget_gib=round(vllm_budget_gib, 3),
+        headroom_cap_gib=round(headroom_cap, 3),
+        headroom_vllm_pool_gib=round(headroom_vllm, 3),
+        is_oom_cap=is_oom_cap,
+        is_oom_vllm_pool=is_oom_vllm_pool,
         kv_fraction_of_total=round(kv_fraction, 4),
     )
 
@@ -125,17 +157,18 @@ def calculate_memory_breakdown(
 def calculate_oom_cliff(
     spec: ModelSpec,
     num_users: int = 1,
-    vram_cap_gb: float = 16.0,
-    runtime_overhead_gb: float = 0.80,
+    vram_target_gib: float = 16.0,
+    runtime_overhead_gib: float = 0.80,
 ) -> int:
-    """Calculate theoretical max context length per user before triggering OOM.
+    """Calculate theoretical max context length per user before exhausting target VRAM budget.
 
-    Equation: (VRAM_cap - Weights - Runtime) * 1024^3 / (num_users * KV_bytes_per_token)
+    Equation: (VRAM_target - Weights - Runtime) * 1024^3 / (num_users * KV_bytes_per_token)
     """
-    net_headroom_gb = vram_cap_gb - spec.weight_size_gb - runtime_overhead_gb
-    if net_headroom_gb <= 0:
+    weights_gib = get_weights_gib(spec)
+    net_headroom_gib = vram_target_gib - weights_gib - runtime_overhead_gib
+    if net_headroom_gib <= 0:
         return 0
-    net_headroom_bytes = net_headroom_gb * (1024**3)
+    net_headroom_bytes = net_headroom_gib * (1024**3)
     kv_bytes_per_tok = calculate_kv_bytes_per_token(spec)
     tokens_total = net_headroom_bytes / (num_users * kv_bytes_per_tok)
     return int(math.floor(tokens_total))
@@ -151,7 +184,7 @@ def calculate_roofline(
     """Calculate theoretical memory-bandwidth bound decode throughput and compute-bound prefill TTFT."""
     kv_bytes_per_tok = calculate_kv_bytes_per_token(spec)
     kv_bytes_total = kv_bytes_per_tok * context_len * batch_size
-    weights_bytes = int(spec.weight_size_gb * (1024**3))
+    weights_bytes = get_weights_bytes(spec)
     bytes_per_decode_step = weights_bytes + kv_bytes_total
 
     # Memory-bandwidth bound TPOT (ms)
@@ -162,17 +195,23 @@ def calculate_roofline(
 
     # Base zero-context step latency (only reading weights)
     base_latency_ms = (weights_bytes / (memory_bw_gbs * 1e9)) * 1000.0
-    slowdown_pct = ((decode_step_latency_ms - base_latency_ms) / base_latency_ms) * 100.0
+    base_throughput = (batch_size / (base_latency_ms / 1000.0)) if base_latency_ms > 0 else 0.0
 
-    # Compute-bound prefill FLOPs
-    # Linear projection FLOPs: ~ 2 * params * context_len
-    # Self-attention FLOPs: ~ 4 * num_layers * hidden_size * context_len^2
-    hidden_size = spec.hidden_size
-    layers = spec.num_full_attn_layers
-    params_est = spec.weight_size_gb * (1024**3) / 2  # estimated param count in BF16
-    linear_flops = 2.0 * params_est * context_len
-    attn_flops = 4.0 * layers * hidden_size * (context_len**2)
-    total_prefill_flops = linear_flops + attn_flops
+    # Percentage changes:
+    # 1. Latency increase (%)
+    tpot_increase_pct = ((decode_step_latency_ms - base_latency_ms) / base_latency_ms) * 100.0
+    # 2. Throughput reduction (%)
+    throughput_reduction_pct = ((base_throughput - decode_throughput) / base_throughput) * 100.0
+
+    # Compute-bound prefill FLOPs:
+    # 1. Linear projection FLOPs: 2 * param_count * context_len
+    # 2. Causal self-attention FLOPs (FlashAttention-2 causal lower-triangle):
+    #    2 * num_layers * (num_q_heads * head_dim) * context_len^2
+    param_count = weights_bytes / 2  # 2 bytes per param in BF16
+    linear_flops = 2.0 * param_count * context_len
+    q_dim = spec.num_q_heads * spec.head_dim
+    causal_attn_flops = 2.0 * spec.num_full_attn_layers * q_dim * (context_len**2)
+    total_prefill_flops = linear_flops + causal_attn_flops
 
     # Compute-bound min TTFT (sec)
     peak_flops = tflops_bf16 * 1e12
@@ -185,43 +224,50 @@ def calculate_roofline(
         total_bytes_read_per_step=bytes_per_decode_step,
         decode_step_latency_ms=round(decode_step_latency_ms, 3),
         decode_throughput_tok_per_sec=round(decode_throughput, 2),
+        tpot_latency_increase_pct=round(tpot_increase_pct, 2),
+        throughput_reduction_pct=round(throughput_reduction_pct, 2),
         prefill_flops=round(total_prefill_flops, 2),
         prefill_min_ttft_sec=round(min_ttft_sec, 4),
-        decode_slowdown_vs_zero_ctx_pct=round(slowdown_pct, 2),
     )
 
 
 def generate_test_matrix(
     spec: ModelSpec,
-    vram_cap_gb: float = 16.0,
-    runtime_overhead_gb: float = 0.80,
+    vram_cap_gib: float = 16.0,
+    gpu_utilization: float = 0.85,
+    runtime_overhead_gib: float = 0.80,
     memory_bw_gbs: float = 1008.0,
     tflops_bf16: float = 82.6,
 ) -> Dict[str, Any]:
     """Generate structured empirical test matrix for a model under given hardware constraints."""
     kv_bytes = calculate_kv_bytes_per_token(spec)
-    oom_1u = calculate_oom_cliff(spec, 1, vram_cap_gb, runtime_overhead_gb)
-    oom_4u = calculate_oom_cliff(spec, 4, vram_cap_gb, runtime_overhead_gb)
-    oom_8u = calculate_oom_cliff(spec, 8, vram_cap_gb, runtime_overhead_gb)
-    oom_12u = calculate_oom_cliff(spec, 12, vram_cap_gb, runtime_overhead_gb)
-    oom_16u = calculate_oom_cliff(spec, 16, vram_cap_gb, runtime_overhead_gb)
+    weights_gib = get_weights_gib(spec)
+    vllm_budget_gib = vram_cap_gib * gpu_utilization
 
-    # Standard contexts to evaluate
-    eval_contexts = [512, 1024, 2048, 4096, 8192, 16384, 32768]
-    if oom_1u > 32768:
-        eval_contexts.extend([49152, 65536])
+    # OOM thresholds for both ceilings
+    oom_cap_1u = calculate_oom_cliff(spec, 1, vram_cap_gib, runtime_overhead_gib)
+    oom_pool_1u = calculate_oom_cliff(spec, 1, vllm_budget_gib, runtime_overhead_gib)
+
+    oom_pool_4u = calculate_oom_cliff(spec, 4, vllm_budget_gib, runtime_overhead_gib)
+    oom_pool_8u = calculate_oom_cliff(spec, 8, vllm_budget_gib, runtime_overhead_gib)
+    oom_pool_12u = calculate_oom_cliff(spec, 12, vllm_budget_gib, runtime_overhead_gib)
+    oom_pool_16u = calculate_oom_cliff(spec, 16, vllm_budget_gib, runtime_overhead_gib)
+
+    eval_contexts = [512, 1024, 2048, 4096, 8192, 16384, 32768, 49152, 65536]
 
     single_stream_breakdowns = []
     for ctx in eval_contexts:
-        mb = calculate_memory_breakdown(spec, ctx, 1, vram_cap_gb, runtime_overhead_gb)
+        mb = calculate_memory_breakdown(spec, ctx, 1, vram_cap_gib, gpu_utilization, runtime_overhead_gib)
         rf = calculate_roofline(spec, ctx, 1, memory_bw_gbs, tflops_bf16)
-        
-        # Categorize regime
-        if mb.is_oom:
-            regime = "over_the_cliff"
-        elif mb.total_memory_gb >= (vram_cap_gb * 0.80):
+
+        # Categorize regime based on vLLM pool and process cap
+        if mb.is_oom_cap:
+            regime = "hard_process_oom"
+        elif mb.is_oom_vllm_pool:
+            regime = "vllm_pool_exhaustion"
+        elif mb.total_memory_gib >= (vllm_budget_gib * 0.90):
             regime = "cliff_edge"
-        elif mb.kv_cache_gb >= (spec.weight_size_gb * 0.25):
+        elif mb.kv_cache_gib >= (weights_gib * 0.25):
             regime = "inflection"
         else:
             regime = "sub_critical"
@@ -240,31 +286,39 @@ def generate_test_matrix(
     for u in concurrency_users:
         user_row = []
         for c in concurrency_ctxs:
-            mb = calculate_memory_breakdown(spec, c, u, vram_cap_gb, runtime_overhead_gb)
+            mb = calculate_memory_breakdown(spec, c, u, vram_cap_gib, gpu_utilization, runtime_overhead_gib)
             user_row.append({
                 "users": u,
                 "context_len": c,
                 "total_tokens": u * c,
-                "kv_gb": mb.kv_cache_gb,
-                "total_gb": mb.total_memory_gb,
-                "is_oom": mb.is_oom,
+                "kv_gib": mb.kv_cache_gib,
+                "total_gib": mb.total_memory_gib,
+                "is_oom_cap": mb.is_oom_cap,
+                "is_oom_vllm_pool": mb.is_oom_vllm_pool,
             })
         concurrency_grid.append({"users": u, "contexts": user_row})
 
     return {
         "model": spec.name,
         "hf_repo_id": spec.hf_repo_id,
-        "vram_cap_gb": vram_cap_gb,
-        "runtime_overhead_gb": runtime_overhead_gb,
+        "vram_cap_gib": vram_cap_gib,
+        "gpu_utilization": gpu_utilization,
+        "vllm_budget_gib": round(vllm_budget_gib, 3),
+        "runtime_overhead_gib": runtime_overhead_gib,
         "kv_bytes_per_token": kv_bytes,
-        "weight_size_gb": spec.weight_size_gb,
-        "net_headroom_gb": round(vram_cap_gb - spec.weight_size_gb - runtime_overhead_gb, 3),
-        "theoretical_oom_cliffs": {
-            "1_user": oom_1u,
-            "4_users": oom_4u,
-            "8_users": oom_8u,
-            "12_users": oom_12u,
-            "16_users": oom_16u,
+        "weights_decimal_gb": spec.weight_size_gb,
+        "weights_gib": round(weights_gib, 3),
+        "net_headroom_cap_gib": round(vram_cap_gib - weights_gib - runtime_overhead_gib, 3),
+        "net_headroom_vllm_pool_gib": round(vllm_budget_gib - weights_gib - runtime_overhead_gib, 3),
+        "theoretical_oom_cliffs_vllm_pool": {
+            "1_user": oom_pool_1u,
+            "4_users": oom_pool_4u,
+            "8_users": oom_pool_8u,
+            "12_users": oom_pool_12u,
+            "16_users": oom_pool_16u,
+        },
+        "theoretical_oom_cliffs_hard_cap": {
+            "1_user": oom_cap_1u,
         },
         "single_stream_sweep": single_stream_breakdowns,
         "concurrency_grid": concurrency_grid,
@@ -279,27 +333,32 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "",
         f"> **Target Hardware:** {hw_name}  ",
         f"> **Model Checkpoint:** `{m['hf_repo_id']}`  ",
-        f"> **VRAM Ceiling:** `{m['vram_cap_gb']} GB` (Simulated Consumer Cap)  ",
+        f"> **VRAM Allocator Cap:** `{m['vram_cap_gib']} GiB` (Simulated Consumer Cap)  ",
+        f"> **vLLM Target Utilization:** `{m['gpu_utilization']} ({m['vllm_budget_gib']} GiB Budget)`  ",
         f"> **KV Bytes / Token (BF16):** `{m['kv_bytes_per_token']} bytes` ({m['kv_bytes_per_token'] // 1024} KiB)",
         "",
         "---",
         "",
-        "## 1. Static Budget & Headroom",
+        "## 1. Static Budget & Two-Tier Headroom",
         "",
-        f"- **Model Weights (BF16):** `{m['weight_size_gb']} GB`",
-        f"- **Runtime / CUDA Overhead Buffer:** `{m['runtime_overhead_gb']} GB`",
-        f"- **Net Usable KV Headroom:** `{m['net_headroom_gb']} GB`",
+        f"- **Model Weights:** `{m['weights_decimal_gb']} GB` decimal = `{m['weights_gib']} GiB` binary",
+        f"- **Runtime / CUDA Overhead Buffer:** `{m['runtime_overhead_gib']} GiB`",
+        f"- **Net KV Headroom (Tier 1 Process Cap {m['vram_cap_gib']} GiB):** `{m['net_headroom_cap_gib']} GiB`",
+        f"- **Net KV Headroom (Tier 2 vLLM Pool {m['vllm_budget_gib']} GiB):** `{m['net_headroom_vllm_pool_gib']} GiB`",
         "",
         "### Theoretical OOM Context Thresholds",
         "",
-        "| Concurrency ($N$) | Theoretical Max Context per Stream | Total Concurrent Tokens | Failure Mode |",
+        "| Concurrency ($N$) | vLLM Pool Limit (`util=0.85`) | Process Cap Limit (`util=1.0`) | Failure / Saturation Mode |",
         "| :---: | :---: | :---: | :--- |",
     ]
 
-    for u_key, oom_val in m["theoretical_oom_cliffs"].items():
+    for u_key, oom_pool in m["theoretical_oom_cliffs_vllm_pool"].items():
         users = int(u_key.split("_")[0])
-        total_toks = users * oom_val
-        lines.append(f"| **{users} user(s)** | **{oom_val:,} tokens** | {total_toks:,} | OOM if context > {oom_val:,} |")
+        oom_cap = m["theoretical_oom_cliffs_hard_cap"]["1_user"] // users
+        lines.append(
+            f"| **{users} user(s)** | **{oom_pool:,} tokens** | {oom_cap:,} tokens | "
+            f"KV pool exhausted if context > {oom_pool:,} |"
+        )
 
     lines.extend([
         "",
@@ -307,8 +366,8 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "",
         "## 2. Single-Stream Context Sweep & Roofline Bounds ($N=1$)",
         "",
-        "| Context ($C$) | Regime | Total VRAM (GB) | Headroom (GB) | Min TTFT (ms) | Min TPOT (ms) | Peak Tok/s | Slowdown vs Base | Status |",
-        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        "| Context ($C$) | Regime | Total VRAM (GiB) | Pool Headroom | Min TTFT (ms) | Min TPOT (ms) | Peak Tok/s | Latency $\\Delta$ | Throughput $\\Delta$ | Status |",
+        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ])
 
     for pt in m["single_stream_sweep"]:
@@ -316,11 +375,20 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         reg = pt["regime"].replace("_", " ").title()
         mem = pt["memory"]
         rf = pt["roofline"]
-        status = "⚠️ **OOM**" if mem["is_oom"] else "✅ Fits"
+        if mem["is_oom_cap"]:
+            status = "❌ **Hard OOM**"
+        elif mem["is_oom_vllm_pool"]:
+            status = "⚠️ **Pool OOM**"
+        elif mem["total_memory_gib"] >= (m["vllm_budget_gib"] * 0.90):
+            status = "⚡ **Near Edge**"
+        else:
+            status = "✅ Fits"
+
         lines.append(
-            f"| `{c:,}` | {reg} | {mem['total_memory_gb']:.2f} | {mem['headroom_remaining_gb']:.2f} | "
+            f"| `{c:,}` | {reg} | {mem['total_memory_gib']:.2f} | {mem['headroom_vllm_pool_gib']:.2f} GiB | "
             f"{rf['prefill_min_ttft_sec']*1000:.1f} | {rf['decode_step_latency_ms']:.2f} | "
-            f"{rf['decode_throughput_tok_per_sec']:.1f} | +{rf['decode_slowdown_vs_zero_ctx_pct']:.1f}% | {status} |"
+            f"{rf['decode_throughput_tok_per_sec']:.1f} | +{rf['tpot_latency_increase_pct']:.1f}% | "
+            f"-{rf['throughput_reduction_pct']:.1f}% | {status} |"
         )
 
     lines.extend([
@@ -328,6 +396,8 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "---",
         "",
         "## 3. Multi-User Concurrency Grid ($N \\times C$)",
+        "",
+        "Total memory footprint against the **13.60 GiB vLLM Pool** (`util=0.85`):",
         "",
         "| Users ($N$) | 1024 Context | 2048 Context | 4096 Context | 8192 Context |",
         "| :---: | :---: | :---: | :---: | :---: |",
@@ -337,13 +407,15 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         u = row["users"]
         cols = []
         for c_entry in row["contexts"]:
-            vram = c_entry["total_gb"]
-            if c_entry["is_oom"]:
-                cols.append(f"❌ **{vram:.1f} GB** (OOM)")
-            elif vram >= (m["vram_cap_gb"] * 0.90):
-                cols.append(f"⚠️ **{vram:.1f} GB** (Edge)")
+            vram = c_entry["total_gib"]
+            if c_entry["is_oom_cap"]:
+                cols.append(f"❌ **{vram:.1f} GiB** (Hard OOM)")
+            elif c_entry["is_oom_vllm_pool"]:
+                cols.append(f"⚠️ **{vram:.1f} GiB** (Pool OOM)")
+            elif vram >= (m["vllm_budget_gib"] * 0.90):
+                cols.append(f"⚡ **{vram:.1f} GiB** (Edge)")
             else:
-                cols.append(f"✅ {vram:.1f} GB")
+                cols.append(f"✅ {vram:.1f} GiB")
         lines.append(f"| **{u} Users** | " + " | ".join(cols) + " |")
 
     lines.extend([
@@ -353,10 +425,12 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "## 4. Test Matrix Specification for Empirical Profiling",
         "",
         "Based on these boundaries, the profiling run will execute:",
-        "1. **Single-User Depth Sweep:** `512, 1024, 2048, 4096, 8192, 16384, 32768` (Fits), plus `49152, 65536` to verify OOM cliff boundary.",
+        "1. **Single-User Depth Sweep:** `512, 1024, 2048, 4096, 8192, 16384, 32768` (Fits inside pool), plus `49152, 65536` to verify pool exhaustion and process OOM.",
         "2. **Multi-User Concurrency Sweep:** `1, 4, 8, 12, 16` users across `1024, 2048, 4096, 8192` contexts.",
-        "   - **Critical Edge Point:** `N=12, C=4096` ($15.61\\text{ GB}$ total $\\rightarrow$ verifies near-capacity paging).",
-        "   - **Deterministic OOM Point:** `N=12, C=8192` ($22.36\\text{ GB}$ total $\\rightarrow$ verifies graceful OOM handling).",
+        "   - **Sub-Critical Points:** $N=4$ at $1024, 2048$ ($9.3\text{--}9.9\text{ GiB}$).",
+        "   - **Inflection Point:** $N=8$ at $2048$ ($11.0\text{ GiB}$) and $N=4$ at $4096$ ($11.0\text{ GiB}$).",
+        "   - **Critical Edge Point:** $N=12$ at $2048$ ($12.1\text{ GiB}$) and $N=8$ at $4096$ ($13.3\text{ GiB}$).",
+        "   - **Pool Exhaustion / Preemption Points:** $N=12$ at $4096$ ($15.5\text{ GiB} > 13.6\text{ GiB}$) and $N=8$ at $8192$ ($17.8\text{ GiB}$).",
     ])
 
     return "\n".join(lines) + "\n"
@@ -366,8 +440,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Calculate theoretical limits & test matrix for KV-cache benchmark")
     parser.add_argument("--model", default="qwen3-4b", help=f"Model name (default: qwen3-4b, available: {', '.join(MODEL_REGISTRY.keys())})")
     parser.add_argument("--hardware", default="rtx4090_16gb", choices=list(HARDWARE_PRESETS.keys()), help="Hardware preset")
-    parser.add_argument("--max-vram-gb", type=float, default=None, help="Override VRAM cap in GB")
-    parser.add_argument("--runtime-overhead-gb", type=float, default=None, help="Override runtime overhead in GB")
+    parser.add_argument("--max-vram-gb", type=float, default=None, help="Override VRAM cap in GiB")
+    parser.add_argument("--gpu-utilization", type=float, default=None, help="Override vLLM GPU memory utilization fraction (e.g. 0.85)")
+    parser.add_argument("--runtime-overhead-gb", type=float, default=None, help="Override runtime overhead in GiB")
     parser.add_argument("--memory-bw-gbs", type=float, default=None, help="Override memory bandwidth in GB/s")
     parser.add_argument("--tflops-bf16", type=float, default=None, help="Override BF16 dense TFLOPS")
     parser.add_argument("--json", action="store_true", help="Print raw JSON output")
@@ -376,8 +451,9 @@ def main() -> None:
     args = parser.parse_args()
 
     hw = HARDWARE_PRESETS[args.hardware]
-    vram_cap = args.max_vram_gb if args.max_vram_gb is not None else hw["vram_cap_gb"]
-    runtime_overhead = args.runtime_overhead_gb if args.runtime_overhead_gb is not None else hw["runtime_overhead_gb"]
+    vram_cap = args.max_vram_gb if args.max_vram_gb is not None else hw["vram_cap_gib"]
+    gpu_util = args.gpu_utilization if args.gpu_utilization is not None else hw["gpu_utilization"]
+    runtime_overhead = args.runtime_overhead_gb if args.runtime_overhead_gb is not None else hw["runtime_overhead_gib"]
     mem_bw = args.memory_bw_gbs if args.memory_bw_gbs is not None else hw["memory_bw_gbs"]
     tflops = args.tflops_bf16 if args.tflops_bf16 is not None else hw["tflops_bf16"]
 
@@ -388,8 +464,9 @@ def main() -> None:
 
     matrix = generate_test_matrix(
         spec=spec,
-        vram_cap_gb=vram_cap,
-        runtime_overhead_gb=runtime_overhead,
+        vram_cap_gib=vram_cap,
+        gpu_utilization=gpu_util,
+        runtime_overhead_gib=runtime_overhead,
         memory_bw_gbs=mem_bw,
         tflops_bf16=tflops,
     )
