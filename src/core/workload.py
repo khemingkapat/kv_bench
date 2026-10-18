@@ -77,11 +77,55 @@ def load_continuous_prefix(context_length: int, pg19_dir: str | None = None) -> 
     return _make_prompt(context_length)
 
 
+def extract_request_timings(
+    out: Any, fallback_wall_sec: float, gen_tokens: int
+) -> tuple[float, float, float]:
+    """Extract (ttft_sec, decode_sec, total_sec) from vLLM RequestOutput across V0 and V1 APIs."""
+    metrics = getattr(out, "metrics", None)
+    if metrics is not None:
+        def _is_num(val: Any) -> bool:
+            return isinstance(val, (int, float)) and not isinstance(val, bool)
+
+        # 1. vLLM V1 API: RequestStateStats
+        # Attribute first_token_latency is the wall-clock interval from arrival to first token.
+        # first_token_ts and last_token_ts are monotonic timestamps of first and last generation steps.
+        first_token_latency = getattr(metrics, "first_token_latency", None)
+        first_token_ts = getattr(metrics, "first_token_ts", None)
+        last_token_ts = getattr(metrics, "last_token_ts", None)
+        scheduled_ts = getattr(metrics, "scheduled_ts", None)
+
+        if _is_num(first_token_ts) and _is_num(last_token_ts) and first_token_ts > 0.0:
+            decode = max(0.0, float(last_token_ts - first_token_ts))
+            if _is_num(first_token_latency) and first_token_latency > 0.0:
+                ttft = float(first_token_latency)
+            elif _is_num(scheduled_ts) and scheduled_ts > 0.0:
+                ttft = max(0.0, float(first_token_ts - scheduled_ts))
+            else:
+                ttft = max(0.0, fallback_wall_sec - decode)
+            total = ttft + decode
+            return round(ttft, 4), round(decode, 4), round(total, 4)
+
+        # 2. vLLM V0 API: RequestMetrics (first_token_time, arrival_time, finished_time)
+        ft = getattr(metrics, "first_token_time", None)
+        arr = getattr(metrics, "arrival_time", None)
+        fin = getattr(metrics, "finished_time", None)
+        if _is_num(ft) and _is_num(arr) and _is_num(fin):
+            ttft = max(0.0, float(ft - arr))
+            decode = max(0.0, float(fin - ft))
+            total = max(0.0, float(fin - arr))
+            return round(ttft, 4), round(decode, 4), round(total, 4)
+
+    # 3. Fallback when engine metrics are absent:
+    total = fallback_wall_sec
+    ttft = total
+    decode = 0.0
+    return round(ttft, 4), round(decode, 4), round(total, 4)
+
+
 def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:
     from vllm import SamplingParams
 
     sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=5)
-
 
     start_wall = time.perf_counter()
     outputs = llm.generate([prompt], sampling_params)
@@ -91,18 +135,7 @@ def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:
     prompt_tokens = len(out.prompt_token_ids)
     gen_tokens = len(out.outputs[0].token_ids)
 
-    metrics = getattr(out, "metrics", None)
-    has_engine_metrics = metrics and all(
-        getattr(metrics, f, None) for f in ("first_token_time", "arrival_time", "finished_time")
-    )
-    if has_engine_metrics:
-        ttft = metrics.first_token_time - metrics.arrival_time
-        decode = metrics.finished_time - metrics.first_token_time
-        total = metrics.finished_time - metrics.arrival_time
-    else:
-        total = end_wall - start_wall
-        ttft = total
-        decode = 0.0
+    ttft, decode, total = extract_request_timings(out, end_wall - start_wall, gen_tokens)
 
     decode_tokens = gen_tokens - 1 if gen_tokens > 1 else gen_tokens
     tpot_mean = (decode / decode_tokens * 1000.0) if (decode > 0 and decode_tokens > 0) else 0.0
@@ -210,31 +243,21 @@ class ConcurrentChatWorkload(Workload):
             gen_len = len(out.outputs[0].token_ids)
             tot_gen_tok += gen_len
 
-            metrics = getattr(out, "metrics", None)
-            has_metrics = metrics and all(
-                getattr(metrics, f, None)
-                for f in ("first_token_time", "arrival_time", "finished_time")
-            )
-            if has_metrics:
-                t = metrics.first_token_time - metrics.arrival_time
-                d = metrics.finished_time - metrics.first_token_time
-                decode_tok = gen_len - 1 if gen_len > 1 else gen_len
-                if d > 0 and decode_tok > 0:
-                    tpots.append(round(d / decode_tok * 1000.0, 2))
-            else:
-                t = (end_wall - start_wall) / len(outputs)
-                d = 0.0
+            t, d, _ = extract_request_timings(out, end_wall - start_wall, gen_len)
+            decode_tok = gen_len - 1 if gen_len > 1 else gen_len
+            if d > 0 and decode_tok > 0:
+                tpots.append(round(d / decode_tok * 1000.0, 2))
             ttfts.append(round(t, 4))
             decodes.append(round(d, 4))
 
-        mean_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        mean_ttft = sum(ttfts) / len(ttfts) if ttfts else (end_wall - start_wall)
         p95_ttft = calc_percentile(ttfts, 95.0)
 
         total_wall = end_wall - start_wall
-        total_decode = max(decodes) if decodes else 0.0
+        total_decode = max(decodes) if decodes else max(0.0, total_wall - mean_ttft)
 
         decode_toks = tot_gen_tok - len(outputs) if tot_gen_tok > len(outputs) else tot_gen_tok
-        tpot_mean = (total_decode / decode_toks * 1000.0) if (total_decode > 0 and decode_toks > 0) else 0.0
+        tpot_mean = (sum(tpots) / len(tpots)) if tpots else ((total_decode / decode_toks * 1000.0) if (total_decode > 0 and decode_toks > 0) else 0.0)
         p95_tpot = calc_percentile(tpots, 95.0) if tpots else round(tpot_mean, 2)
 
         return WorkloadOutput(
@@ -248,4 +271,5 @@ class ConcurrentChatWorkload(Workload):
             ttft_p95_sec=round(p95_ttft, 4),
             inter_token_latencies_ms=tpots,
             request_ttfts_sec=ttfts,
+            extra_summary={"num_users": self.num_users},
         )

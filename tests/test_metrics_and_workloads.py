@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from src.core.metrics import ResultEntry, calc_percentile
@@ -320,6 +321,11 @@ class TestWorkloads(unittest.TestCase):
         fake_choice = MagicMock()
         fake_choice.text = "Paris"
         fake_choice.token_ids = [4, 5]
+        fake_lp1 = MagicMock()
+        fake_lp1.logprob = -0.1
+        fake_lp2 = MagicMock()
+        fake_lp2.logprob = -0.2
+        fake_choice.logprobs = [{4: fake_lp1}, {5: fake_lp2}]
         fake_out.outputs = [fake_choice]
         fake_metrics = MagicMock()
         fake_metrics.first_token_time = 0.5
@@ -335,6 +341,8 @@ class TestWorkloads(unittest.TestCase):
             self.assertIn("longmem_acc_overall", result.extra_summary)
             self.assertGreaterEqual(result.tpot_mean_ms, 0.0)
             self.assertGreaterEqual(result.tpot_p95_ms, 0.0)
+            self.assertEqual(len(result.generated_token_ids), len(workload.samples) * 2)
+            self.assertEqual(len(result.step_logprobs), len(workload.samples) * 2)
 
 
 
@@ -388,7 +396,73 @@ class TestComparison(unittest.TestCase):
         self.assertIn("75.0%", table)
         self.assertIn("0.0050", table)
 
+    def test_consolidate_concurrency_results(self):
+        import json
+        import tempfile
+        from scripts.consolidate_concurrency_results import consolidate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "concurrent_1users_16gb.json")
+            file2 = os.path.join(tmpdir, "concurrent_4users_16gb.json")
+            out_file = os.path.join(tmpdir, "concurrent_baseline_16gb.json")
+
+            with open(file1, "w") as f:
+                json.dump({
+                    "model": "qwen3-4b",
+                    "technique": "baseline",
+                    "results": [{"requested_ctx": 1024, "status": "SUCCESS", "extra": {"num_users": 1}}],
+                }, f)
+
+            with open(file2, "w") as f:
+                json.dump({
+                    "model": "qwen3-4b",
+                    "technique": "baseline",
+                    "results": [{"requested_ctx": 1024, "status": "SUCCESS", "extra": {"num_users": 4}}],
+                }, f)
+
+            consolidate([os.path.join(tmpdir, "concurrent_*users_16gb.json")], out_file)
+
+            with open(out_file, "r") as f:
+                merged = json.load(f)
+
+            self.assertEqual(merged["model"], "qwen3-4b")
+            self.assertEqual(len(merged["concurrency_grid"]), 2)
+            self.assertEqual(merged["concurrency_grid"][0]["num_users"], 1)
+            self.assertEqual(merged["concurrency_grid"][1]["num_users"], 4)
+
+    def test_subprocess_isolation_dry_run(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = os.path.join(tmpdir, "isolated_sweep.json")
+            cmd = [
+                sys.executable,
+                "main.py",
+                "--technique", "baseline",
+                "--model", "qwen3-4b",
+                "--contexts", "512", "1024",
+                "--dry-run",
+                "--force-isolation",
+                "--output", out_file,
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, msg=f"Subprocess failed:\n{res.stderr}")
+            self.assertTrue(os.path.exists(out_file))
+
+            with open(out_file) as f:
+                data = json.load(f)
+
+            self.assertEqual(data["model"], "qwen3-4b")
+            self.assertEqual(len(data["results"]), 2)
+            self.assertEqual(data["results"][0]["requested_ctx"], 512)
+            self.assertEqual(data["results"][1]["requested_ctx"], 1024)
+            self.assertEqual(data["results"][0]["status"], "DRY_RUN")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

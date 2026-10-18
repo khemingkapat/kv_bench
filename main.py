@@ -1,10 +1,17 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+from typing import Any
 
+from src.core.axis import axis_names
 from src.core.config import BenchmarkConfig
-from src.core.harness import run_benchmark
+from src.core.harness import RunResult, run_benchmark
+from src.core.metrics import ResultEntry
+from src.core.quality import load_quality_reference, save_quality_reference
 from src.core.registry import get_technique, list_techniques
 
 
@@ -43,6 +50,116 @@ def parse_technique_args(raw: list[str]) -> dict:
                 pass
         result[k] = v
     return result
+
+
+def run_isolated_sweep(args, contexts: list[int], max_tokens: int, output_path: str) -> RunResult:
+    """Run each context length in an isolated subprocess to prevent CUDA memory retention."""
+    technique_kwargs = parse_technique_args(args.technique_args)
+    technique_cls_instance = get_technique(args.technique, **technique_kwargs)
+    axes = axis_names(technique_cls_instance.axes)
+
+    tmp_dir = tempfile.mkdtemp(prefix="kv_bench_iso_")
+    all_results: list[ResultEntry] = []
+    combined_ref_records: dict[str, Any] = {}
+
+    try:
+        for idx, ctx in enumerate(contexts, 1):
+            print(f"\n=======================================================")
+            print(f"=== [Context Sweep {idx}/{len(contexts)}: {ctx} tokens (Isolated Subprocess)] ===")
+            print(f"=======================================================")
+            sys.stdout.flush()
+
+            tmp_out = os.path.join(tmp_dir, f"out_{ctx}.json")
+            tmp_ref = os.path.join(tmp_dir, f"ref_{ctx}.json") if args.save_reference else None
+
+            cmd = [
+                sys.executable,
+                os.path.abspath(sys.argv[0]),
+                "--technique", args.technique,
+                "--model", args.model,
+                "--contexts", str(ctx),
+                "--max-tokens", str(max_tokens),
+                "--gpu-utilization", str(args.gpu_utilization),
+                "--workload", args.workload,
+                "--num-users", str(args.num_users),
+                "--output", tmp_out,
+                "--no-isolation",
+            ]
+            if args.dry_run:
+                cmd.append("--dry-run")
+            if args.max_vram_gb is not None:
+                cmd.extend(["--max-vram-gb", str(args.max_vram_gb)])
+            if args.technique_args:
+                cmd.append("--technique-args")
+                cmd.extend(args.technique_args)
+            if args.profile:
+                cmd.append("--profile")
+                cmd.extend(["--profile-dir", args.profile_dir])
+            if args.samples_per_task is not None:
+                cmd.extend(["--samples-per-task", str(args.samples_per_task)])
+            if args.seed is not None:
+                cmd.extend(["--seed", str(args.seed)])
+            if args.max_samples is not None:
+                cmd.extend(["--max-samples", str(args.max_samples)])
+            if args.dataset_path:
+                cmd.extend(["--dataset-path", args.dataset_path])
+            if tmp_ref:
+                cmd.extend(["--save-reference", tmp_ref])
+            if args.eval_reference:
+                cmd.extend(["--eval-reference", args.eval_reference])
+
+            proc = subprocess.run(cmd)
+
+            child_entry: ResultEntry | None = None
+            if os.path.exists(tmp_out):
+                try:
+                    with open(tmp_out) as f:
+                        child_data = json.load(f)
+                    res_list = child_data.get("results", [])
+                    if res_list:
+                        raw_dict = res_list[0]
+                        child_entry = ResultEntry(**raw_dict)
+                except Exception as ex:
+                    print(f"Failed to parse child result for ctx={ctx}: {ex}", file=sys.stderr)
+
+            if child_entry is None:
+                child_entry = ResultEntry(
+                    requested_ctx=ctx,
+                    status="FAILED",
+                    axes=axes,
+                    error=f"Subprocess terminated with exit code {proc.returncode}",
+                )
+
+            all_results.append(child_entry)
+
+            if tmp_ref and os.path.exists(tmp_ref):
+                try:
+                    ref_data = load_quality_reference(tmp_ref)
+                    if "contexts" in ref_data and isinstance(ref_data["contexts"], dict):
+                        combined_ref_records.update(ref_data["contexts"])
+                except Exception as ex:
+                    print(f"Failed to parse child reference for ctx={ctx}: {ex}", file=sys.stderr)
+
+        if args.save_reference and combined_ref_records:
+            save_quality_reference(
+                args.save_reference,
+                {
+                    "model": args.model,
+                    "technique": args.technique,
+                    "contexts": combined_ref_records,
+                },
+            )
+            print(f"Saved consolidated quality reference -> {args.save_reference}")
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return RunResult(
+        model=args.model,
+        technique=args.technique,
+        axes=axes,
+        results=all_results,
+    )
 
 
 def main() -> None:
@@ -147,6 +264,16 @@ Examples:
         default=None,
         help="Output JSON path (default: results/<technique>.json or results/verify_<technique>.json)",
     )
+    parser.add_argument(
+        "--no-isolation",
+        action="store_true",
+        help="Disable subprocess isolation across context lengths (run all contexts in a single process)",
+    )
+    parser.add_argument(
+        "--force-isolation",
+        action="store_true",
+        help="Force subprocess isolation even during dry-run (useful for verifying subprocess mechanics)",
+    )
     args = parser.parse_args()
 
     technique_kwargs = parse_technique_args(args.technique_args)
@@ -189,20 +316,28 @@ Examples:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    run_result = run_benchmark(
-        technique_cls_instance,
-        args.model,
-        contexts,
-        max_tokens=max_tokens,
-        gpu_utilization=args.gpu_utilization,
-        profile=args.profile,
-        profile_dir=args.profile_dir,
-        dry_run=args.dry_run,
-        workload_override=workload_override,
-        max_vram_gb=args.max_vram_gb,
-        save_reference=args.save_reference,
-        eval_reference=args.eval_reference,
+    should_isolate = (
+        (len(contexts) > 1 and not args.no_isolation and not args.verify)
+        and (not args.dry_run or args.force_isolation)
     )
+
+    if should_isolate:
+        run_result = run_isolated_sweep(args, contexts, max_tokens, output_path)
+    else:
+        run_result = run_benchmark(
+            technique_cls_instance,
+            args.model,
+            contexts,
+            max_tokens=max_tokens,
+            gpu_utilization=args.gpu_utilization,
+            profile=args.profile,
+            profile_dir=args.profile_dir,
+            dry_run=args.dry_run,
+            workload_override=workload_override,
+            max_vram_gb=args.max_vram_gb,
+            save_reference=args.save_reference,
+            eval_reference=args.eval_reference,
+        )
 
 
     with open(output_path, "w") as f:
