@@ -214,6 +214,7 @@ def evaluate_fidelity_against_reference(
 
 DEFAULT_REFUSAL_TRIGGERS: list[str] = [
     "not mentioned",
+    "no mention",
     "don't know",
     "do not know",
     "cannot answer",
@@ -222,6 +223,14 @@ DEFAULT_REFUSAL_TRIGGERS: list[str] = [
     "unknown",
     "not provided",
     "unable to find",
+    "not discussed",
+    "not stated",
+    "not specified",
+    "never mentioned",
+    "does not mention",
+    "doesn't mention",
+    "does not contain",
+    "doesn't contain",
 ]
 
 NUMBER_WORDS: dict[str, str] = {
