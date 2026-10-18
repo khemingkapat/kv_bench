@@ -19,9 +19,11 @@ class TestTheoreticalLimits(unittest.TestCase):
         self.qwen_spec = get_model_spec("qwen3-4b")
         self.phi_spec = get_model_spec("phi4-mini")
         self.local_spec = get_model_spec("qwen3-1.7b")
+        self.hybrid_spec = get_model_spec("qwen3.5-4b")
         self.assertIsNotNone(self.qwen_spec)
         self.assertIsNotNone(self.phi_spec)
         self.assertIsNotNone(self.local_spec)
+        self.assertIsNotNone(self.hybrid_spec)
 
     def test_kv_bytes_per_token(self):
         # Qwen3-4B: 4 * 36 * 8 * 128 = 147,456 bytes = 144 KiB
@@ -30,6 +32,8 @@ class TestTheoreticalLimits(unittest.TestCase):
         self.assertEqual(calculate_kv_bytes_per_token(self.phi_spec), 131072)
         # Qwen3-1.7B: 4 * 28 * 8 * 128 = 114,688 bytes = 112 KiB
         self.assertEqual(calculate_kv_bytes_per_token(self.local_spec), 114688)
+        # Qwen3.5-4B (Hybrid): 4 * 8 * 4 * 256 = 32,768 bytes = 32 KiB
+        self.assertEqual(calculate_kv_bytes_per_token(self.hybrid_spec), 32768)
 
     def test_weights_conversion(self):
         # Qwen3-4B: 8.06 GB decimal = 8.06e9 bytes = ~7.506 GiB
@@ -62,20 +66,25 @@ class TestTheoreticalLimits(unittest.TestCase):
         self.assertTrue(mb_64k.is_oom_vllm_pool)
 
     def test_oom_cliff_calculation(self):
-        # 1 user on 13.6 GiB pool (util=0.85): net headroom 5.294 GiB -> ~38,546 tokens
+        # Qwen3-4B: 1 user on 13.6 GiB pool (util=0.85): net headroom 5.294 GiB -> 38,546 tokens
         cliff_pool_1u = calculate_oom_cliff(self.qwen_spec, num_users=1, vram_target_gib=13.6, runtime_overhead_gib=0.8)
-        self.assertGreater(cliff_pool_1u, 37000)
-        self.assertLess(cliff_pool_1u, 40000)
+        self.assertEqual(cliff_pool_1u, 38546)
 
-        # 12 users on 13.6 GiB pool: net headroom 5.294 GiB -> ~3,212 tokens per user
+        # Qwen3-4B: 12 users on 13.6 GiB pool -> 3,212 tokens per user
         cliff_pool_12u = calculate_oom_cliff(self.qwen_spec, num_users=12, vram_target_gib=13.6, runtime_overhead_gib=0.8)
-        self.assertGreater(cliff_pool_12u, 3100)
-        self.assertLess(cliff_pool_12u, 3300)
+        self.assertEqual(cliff_pool_12u, 3212)
 
-        # 1 user on 16.0 GiB hard cap: net headroom 7.694 GiB -> ~56,022 tokens
+        # Qwen3-4B: 1 user on 16.0 GiB hard cap -> 56,022 tokens
         cliff_cap_1u = calculate_oom_cliff(self.qwen_spec, num_users=1, vram_target_gib=16.0, runtime_overhead_gib=0.8)
-        self.assertGreater(cliff_cap_1u, 55000)
-        self.assertLess(cliff_cap_1u, 58000)
+        self.assertEqual(cliff_cap_1u, 56022)
+
+        # Peer models (exact alignment with docs/THEORETICAL_LIMITS.md Section 5)
+        self.assertEqual(calculate_oom_cliff(self.phi_spec, num_users=1, vram_target_gib=13.6, runtime_overhead_gib=0.8), 46492)
+        self.assertEqual(calculate_oom_cliff(self.phi_spec, num_users=12, vram_target_gib=13.6, runtime_overhead_gib=0.8), 3874)
+        self.assertEqual(calculate_oom_cliff(self.local_spec, num_users=1, vram_target_gib=6.8, runtime_overhead_gib=0.6), 27964)
+        self.assertEqual(calculate_oom_cliff(self.local_spec, num_users=12, vram_target_gib=6.8, runtime_overhead_gib=0.6), 2330)
+        self.assertEqual(calculate_oom_cliff(self.hybrid_spec, num_users=1, vram_target_gib=13.6, runtime_overhead_gib=0.8), 172238)
+        self.assertEqual(calculate_oom_cliff(self.hybrid_spec, num_users=12, vram_target_gib=13.6, runtime_overhead_gib=0.8), 14353)
 
     def test_roofline_bounds(self):
         # RTX 4090 memory bandwidth 1008 GB/s
@@ -107,6 +116,8 @@ class TestTheoreticalLimits(unittest.TestCase):
         self.assertIn("38,546 tokens", report)
         self.assertIn("Hard OOM", report)
         self.assertIn("Pool OOM", report)
+        self.assertNotIn("\t", report)
+        self.assertIn(r"$8.9\text{--}9.4\text{ GiB}$", report)
 
 
 if __name__ == "__main__":

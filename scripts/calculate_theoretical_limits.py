@@ -27,7 +27,7 @@ import math
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 # Ensure repository root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -96,7 +96,7 @@ def get_weights_bytes(spec: ModelSpec) -> int:
 
     spec.weight_size_gb is stored in decimal GB (10^9 bytes), e.g. 8.06 GB = 8.06e9 bytes.
     """
-    return int(spec.weight_size_gb * 1e9)
+    return int(round(spec.weight_size_gb * 1e9))
 
 
 def get_weights_gib(spec: ModelSpec) -> float:
@@ -244,14 +244,13 @@ def generate_test_matrix(
     weights_gib = get_weights_gib(spec)
     vllm_budget_gib = vram_cap_gib * gpu_utilization
 
-    # OOM thresholds for both ceilings
-    oom_cap_1u = calculate_oom_cliff(spec, 1, vram_cap_gib, runtime_overhead_gib)
-    oom_pool_1u = calculate_oom_cliff(spec, 1, vllm_budget_gib, runtime_overhead_gib)
-
-    oom_pool_4u = calculate_oom_cliff(spec, 4, vllm_budget_gib, runtime_overhead_gib)
-    oom_pool_8u = calculate_oom_cliff(spec, 8, vllm_budget_gib, runtime_overhead_gib)
-    oom_pool_12u = calculate_oom_cliff(spec, 12, vllm_budget_gib, runtime_overhead_gib)
-    oom_pool_16u = calculate_oom_cliff(spec, 16, vllm_budget_gib, runtime_overhead_gib)
+    concurrency_users = [1, 4, 8, 12, 16]
+    cliffs_pool = {}
+    cliffs_cap = {}
+    for u in concurrency_users:
+        key = f"{u}_user" if u == 1 else f"{u}_users"
+        cliffs_pool[key] = calculate_oom_cliff(spec, u, vllm_budget_gib, runtime_overhead_gib)
+        cliffs_cap[key] = calculate_oom_cliff(spec, u, vram_cap_gib, runtime_overhead_gib)
 
     eval_contexts = [512, 1024, 2048, 4096, 8192, 16384, 32768, 49152, 65536]
 
@@ -280,7 +279,6 @@ def generate_test_matrix(
         })
 
     # Multi-user concurrency sweep matrix
-    concurrency_users = [1, 4, 8, 12, 16]
     concurrency_ctxs = [1024, 2048, 4096, 8192]
     concurrency_grid = []
     for u in concurrency_users:
@@ -310,19 +308,21 @@ def generate_test_matrix(
         "weights_gib": round(weights_gib, 3),
         "net_headroom_cap_gib": round(vram_cap_gib - weights_gib - runtime_overhead_gib, 3),
         "net_headroom_vllm_pool_gib": round(vllm_budget_gib - weights_gib - runtime_overhead_gib, 3),
-        "theoretical_oom_cliffs_vllm_pool": {
-            "1_user": oom_pool_1u,
-            "4_users": oom_pool_4u,
-            "8_users": oom_pool_8u,
-            "12_users": oom_pool_12u,
-            "16_users": oom_pool_16u,
-        },
-        "theoretical_oom_cliffs_hard_cap": {
-            "1_user": oom_cap_1u,
-        },
+        "theoretical_oom_cliffs_vllm_pool": cliffs_pool,
+        "theoretical_oom_cliffs_hard_cap": cliffs_cap,
         "single_stream_sweep": single_stream_breakdowns,
         "concurrency_grid": concurrency_grid,
     }
+
+
+def _grid_lookup(grid: list, users: int, ctx: int) -> float:
+    """Helper to fetch total_gib from concurrency_grid."""
+    for row in grid:
+        if row["users"] == users:
+            for cell in row["contexts"]:
+                if cell["context_len"] == ctx:
+                    return cell["total_gib"]
+    return 0.0
 
 
 def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
@@ -348,13 +348,13 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "",
         "### Theoretical OOM Context Thresholds",
         "",
-        "| Concurrency ($N$) | vLLM Pool Limit (`util=0.85`) | Process Cap Limit (`util=1.0`) | Failure / Saturation Mode |",
+        f"| Concurrency ($N$) | vLLM Pool Limit (`util={m['gpu_utilization']}`) | Process Cap Limit (`util=1.0`) | Failure / Saturation Mode |",
         "| :---: | :---: | :---: | :--- |",
     ]
 
     for u_key, oom_pool in m["theoretical_oom_cliffs_vllm_pool"].items():
         users = int(u_key.split("_")[0])
-        oom_cap = m["theoretical_oom_cliffs_hard_cap"]["1_user"] // users
+        oom_cap = m["theoretical_oom_cliffs_hard_cap"][u_key]
         lines.append(
             f"| **{users} user(s)** | **{oom_pool:,} tokens** | {oom_cap:,} tokens | "
             f"KV pool exhausted if context > {oom_pool:,} |"
@@ -366,7 +366,7 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "",
         "## 2. Single-Stream Context Sweep & Roofline Bounds ($N=1$)",
         "",
-        "| Context ($C$) | Regime | Total VRAM (GiB) | Pool Headroom | Min TTFT (ms) | Min TPOT (ms) | Peak Tok/s | Latency $\\Delta$ | Throughput $\\Delta$ | Status |",
+        r"| Context ($C$) | Regime | Total VRAM (GiB) | Pool Headroom | Min TTFT (ms) | Min TPOT (ms) | Peak Tok/s | Latency $\Delta$ | Throughput $\Delta$ | Status |",
         "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ])
 
@@ -395,9 +395,9 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "",
         "---",
         "",
-        "## 3. Multi-User Concurrency Grid ($N \\times C$)",
+        r"## 3. Multi-User Concurrency Grid ($N \times C$)",
         "",
-        "Total memory footprint against the **13.60 GiB vLLM Pool** (`util=0.85`):",
+        f"Total memory footprint against the **{m['vllm_budget_gib']:.2f} GiB vLLM Pool** (`util={m['gpu_utilization']}`):",
         "",
         "| Users ($N$) | 1024 Context | 2048 Context | 4096 Context | 8192 Context |",
         "| :---: | :---: | :---: | :---: | :---: |",
@@ -418,6 +418,16 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
                 cols.append(f"✅ {vram:.1f} GiB")
         lines.append(f"| **{u} Users** | " + " | ".join(cols) + " |")
 
+    g = m["concurrency_grid"]
+    v_4_1k = _grid_lookup(g, 4, 1024)
+    v_4_2k = _grid_lookup(g, 4, 2048)
+    v_8_2k = _grid_lookup(g, 8, 2048)
+    v_4_4k = _grid_lookup(g, 4, 4096)
+    v_12_2k = _grid_lookup(g, 12, 2048)
+    v_8_4k = _grid_lookup(g, 8, 4096)
+    v_12_4k = _grid_lookup(g, 12, 4096)
+    v_8_8k = _grid_lookup(g, 8, 8192)
+
     lines.extend([
         "",
         "---",
@@ -427,10 +437,10 @@ def format_markdown_report(matrix: Dict[str, Any], hw_name: str) -> str:
         "Based on these boundaries, the profiling run will execute:",
         "1. **Single-User Depth Sweep:** `512, 1024, 2048, 4096, 8192, 16384, 32768` (Fits inside pool), plus `49152, 65536` to verify pool exhaustion and process OOM.",
         "2. **Multi-User Concurrency Sweep:** `1, 4, 8, 12, 16` users across `1024, 2048, 4096, 8192` contexts.",
-        "   - **Sub-Critical Points:** $N=4$ at $1024, 2048$ ($9.3\text{--}9.9\text{ GiB}$).",
-        "   - **Inflection Point:** $N=8$ at $2048$ ($11.0\text{ GiB}$) and $N=4$ at $4096$ ($11.0\text{ GiB}$).",
-        "   - **Critical Edge Point:** $N=12$ at $2048$ ($12.1\text{ GiB}$) and $N=8$ at $4096$ ($13.3\text{ GiB}$).",
-        "   - **Pool Exhaustion / Preemption Points:** $N=12$ at $4096$ ($15.5\text{ GiB} > 13.6\text{ GiB}$) and $N=8$ at $8192$ ($17.8\text{ GiB}$).",
+        f"   - **Sub-Critical Points:** $N=4$ at $1024, 2048$ (${v_4_1k:.1f}\\text{{--}}{v_4_2k:.1f}\\text{{ GiB}}$).",
+        f"   - **Inflection Point:** $N=8$ at $2048$ (${v_8_2k:.1f}\\text{{ GiB}}$) and $N=4$ at $4096$ (${v_4_4k:.1f}\\text{{ GiB}}$).",
+        f"   - **Critical Edge Point:** $N=12$ at $2048$ (${v_12_2k:.1f}\\text{{ GiB}}$) and $N=8$ at $4096$ (${v_8_4k:.1f}\\text{{ GiB}}$).",
+        f"   - **Pool Exhaustion / Hard OOM Points:** $N=12$ at $4096$ (${v_12_4k:.1f}\\text{{ GiB}}$) and $N=8$ at $8192$ (${v_8_8k:.1f}\\text{{ GiB}}$).",
     ])
 
     return "\n".join(lines) + "\n"

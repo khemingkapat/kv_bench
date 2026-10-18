@@ -145,9 +145,9 @@ Total memory footprint against the **$13.60\text{ GiB}$ vLLM Pool** (`util=0.85`
 | Model | Hardware Budget | Weights (Binary) | KV Bytes/Token | Pool Headroom (`0.85`) | Single-User Pool Cliff | 12-User Pool Cliff |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **`qwen3-4b`** | 16 GiB | $7.506\text{ GiB}$ | $144\text{ KiB}$ | $5.294\text{ GiB}$ | $38,546$ tokens | $3,212$ tokens |
-| **`phi4-mini`** | 16 GiB | $7.125\text{ GiB}$ | $128\text{ KiB}$ | $5.675\text{ GiB}$ | $47,605$ tokens | $3,967$ tokens |
-| **`qwen3-1.7b`** | 8 GiB | $3.213\text{ GiB}$ | $112\text{ KiB}$ | $2.987\text{ GiB}$ | $28,683$ tokens | $2,390$ tokens |
-| **`qwen3.5-4b` (Hybrid)** | 16 GiB | $7.544\text{ GiB}$ | $32\text{ KiB}$ (+GDN) | $5.256\text{ GiB}$ | $172,228$ tokens | $14,352$ tokens |
+| **`phi4-mini`** | 16 GiB | $7.125\text{ GiB}$ | $128\text{ KiB}$ | $5.675\text{ GiB}$ | $46,492$ tokens | $3,874$ tokens |
+| **`qwen3-1.7b`** | 8 GiB | $3.213\text{ GiB}$ | $112\text{ KiB}$ | $2.987\text{ GiB}$ | $27,964$ tokens | $2,330$ tokens |
+| **`qwen3.5-4b` (Hybrid)** | 16 GiB | $7.544\text{ GiB}$ | $32\text{ KiB}$ (+GDN) | $5.256\text{ GiB}$ | $172,238$ tokens | $14,353$ tokens |
 
 ---
 
