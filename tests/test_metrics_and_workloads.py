@@ -37,6 +37,100 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(entry.ttft_p95_sec, 0.45)
         self.assertEqual(entry.memcpy_bytes_per_token, 2048.5)
 
+    def test_validate_metrics(self):
+        from src.core.metrics import validate_metrics
+
+        valid_entry = ResultEntry(
+            requested_ctx=1024,
+            status="SUCCESS",
+            prompt_tokens=500,
+            generated_tokens=64,
+            ttft_sec=0.25,
+            decode_time_sec=0.5,
+            total_time_sec=0.75,
+            tpot_mean_ms=8.0,
+            tpot_p95_ms=9.5,
+            peak_alloc_mb=6500.0,
+        )
+        self.assertEqual(validate_metrics(valid_entry, max_vram_mb=8000.0), [])
+
+        # VRAM cap exceeded
+        errs = validate_metrics(valid_entry, max_vram_mb=6000.0)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("exceeded cap", errs[0])
+
+        # Negative timing
+        invalid_entry = ResultEntry(
+            requested_ctx=1024,
+            status="SUCCESS",
+            ttft_sec=-0.1,
+            peak_alloc_mb=-5.0,
+        )
+        errs_neg = validate_metrics(invalid_entry)
+        self.assertGreaterEqual(len(errs_neg), 2)
+
+    def test_format_metrics_summary(self):
+        from src.core.metrics import format_metrics_summary
+
+        entry = ResultEntry(
+            requested_ctx=1024,
+            status="SUCCESS",
+            prompt_tokens=1024,
+            generated_tokens=64,
+            ttft_sec=0.45,
+            decode_time_sec=1.2,
+            total_time_sec=1.65,
+            throughput_tok_per_sec=52.5,
+            tpot_mean_ms=19.0,
+            tpot_p95_ms=21.5,
+            peak_alloc_mb=5500.0,
+            host_rss_delta_mb=250.0,
+            cold_ttft_sec=0.85,
+            ttft_p95_sec=0.55,
+            memcpy_bytes_per_token=120.0,
+        )
+        summary = format_metrics_summary(entry)
+        self.assertIn("peak VRAM 5500.0 MB", summary)
+        self.assertIn("TTFT 0.450s", summary)
+        self.assertIn("TPOT 19.0 ms (p95: 21.5 ms)", summary)
+        self.assertIn("52.50 tok/s", summary)
+        self.assertIn("host RSS Δ +250 MB", summary)
+        self.assertIn("cold TTFT 0.850s → warm 0.450s", summary)
+        self.assertIn("memcpy 120.0 B/tok", summary)
+
+    def test_parse_memcpy_summary(self):
+        import json
+        import tempfile
+        from src.core.harness import _parse_memcpy_summary
+
+        trace_data = {
+            "traceEvents": [
+                {
+                    "name": "Memcpy HtoD (Device)",
+                    "cat": "gpu_memcpy",
+                    "args": {"bytes": 4096, "memory bandwidth (GB/s)": 12.5},
+                },
+                {
+                    "name": "Memcpy DtoH (Device)",
+                    "cat": "gpu_memcpy",
+                    "args": {"bytes": 2048, "memory bandwidth (GB/s)": 8.0},
+                },
+                {
+                    "name": "KernelExecution",
+                    "cat": "cuda_runtime",
+                    "args": {"bytes": 9999},
+                },
+            ]
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(trace_data, f)
+            temp_path = f.name
+
+        summary = _parse_memcpy_summary(temp_path)
+        self.assertEqual(summary["memcpy_htod_bytes"], 4096)
+        self.assertEqual(summary["memcpy_dtoh_bytes"], 2048)
+        self.assertEqual(summary["memcpy_peak_bw_gbs"], 12.5)
+
 
 class TestQualityMetrics(unittest.TestCase):
     def test_top1_agreement(self):
@@ -68,6 +162,69 @@ class TestQualityMetrics(unittest.TestCase):
         self.assertIn("kl_div_mean", fidelity)
         self.assertIn("kl_div_p99", fidelity)
 
+    def test_extract_step_logprobs(self):
+        from unittest.mock import MagicMock
+        from src.core.quality import extract_step_logprobs
+
+        mock_out = MagicMock()
+        mock_choice = MagicMock()
+        mock_lp1 = MagicMock()
+        mock_lp1.logprob = -0.25
+        mock_lp2 = MagicMock()
+        mock_lp2.logprob = -1.75
+        mock_choice.logprobs = [{100: mock_lp1, 101: mock_lp2}]
+        mock_out.outputs = [mock_choice]
+
+        step_lps = extract_step_logprobs(mock_out)
+        self.assertEqual(len(step_lps), 1)
+        self.assertAlmostEqual(step_lps[0][100], -0.25)
+        self.assertAlmostEqual(step_lps[0][101], -1.75)
+
+    def test_quality_reference_persistence(self):
+        import tempfile
+        from src.core.quality import (
+            evaluate_fidelity_against_reference,
+            load_quality_reference,
+            save_quality_reference,
+        )
+
+        ref_data = {
+            "model": "qwen3-4b",
+            "contexts": {
+                "512": {
+                    "token_ids": [10, 20, 30],
+                    "step_logprobs": [{10: -0.1}, {20: -0.2}, {30: -0.3}],
+                }
+            },
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        save_quality_reference(temp_path, ref_data)
+        loaded = load_quality_reference(temp_path)
+        self.assertEqual(loaded["model"], "qwen3-4b")
+
+        fidelity = evaluate_fidelity_against_reference(loaded, 512, [10, 20, 30])
+        self.assertAlmostEqual(fidelity["top1_agreement"], 1.0)
+
+    def test_score_longmemeval(self):
+        from src.core.quality import score_longmemeval_dataset, score_longmemeval_sample
+
+        self.assertTrue(score_longmemeval_sample("Paris is the capital of France.", "Paris"))
+        self.assertFalse(score_longmemeval_sample("London is the capital of England.", "Paris"))
+        self.assertTrue(score_longmemeval_sample("I don't know the answer based on the context.", "", is_unanswerable=True))
+        self.assertFalse(score_longmemeval_sample("The answer is 42.", "", is_unanswerable=True))
+
+        samples = [
+            {"task_type": "fact_recall", "expected_answer": "Paris", "unanswerable": False},
+            {"task_type": "unanswerable_refusal", "expected_answer": "", "unanswerable": True},
+        ]
+        preds = ["Paris", "I don't know"]
+        res = score_longmemeval_dataset(samples, preds)
+        self.assertEqual(res["longmem_acc_overall"], 1.0)
+        self.assertEqual(res["longmem_acc_fact_recall"], 1.0)
+        self.assertEqual(res["longmem_acc_unanswerable_refusal"], 1.0)
+
 
 class TestWorkloads(unittest.TestCase):
     def test_concurrent_workload_init(self):
@@ -86,6 +243,10 @@ class TestWorkloads(unittest.TestCase):
             "unanswerable_refusal",
         }
         self.assertTrue(expected_types.issubset(task_types))
+
+    def test_longmemeval_max_samples(self):
+        workload = LongMemEvalWorkload(max_samples=5)
+        self.assertEqual(len(workload.samples), 5)
 
     def test_longmemeval_run_mock(self):
         import sys
@@ -111,11 +272,14 @@ class TestWorkloads(unittest.TestCase):
         fake_out.metrics = fake_metrics
 
         with unittest.mock.patch.dict(sys.modules, {"vllm": mock_vllm}):
-            workload = LongMemEvalWorkload()
+            workload = LongMemEvalWorkload(max_samples=4)
             mock_llm.generate.return_value = [fake_out] * len(workload.samples)
             result = workload.run(mock_llm, context_length=512, max_tokens=16)
             self.assertGreater(result.prompt_tokens, 0)
             self.assertIn("longmem_acc_overall", result.extra_summary)
+            self.assertGreaterEqual(result.tpot_mean_ms, 0.0)
+            self.assertGreaterEqual(result.tpot_p95_ms, 0.0)
+
 
 
 class TestComparison(unittest.TestCase):

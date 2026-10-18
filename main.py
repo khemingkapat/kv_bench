@@ -110,6 +110,22 @@ Examples:
         help="Fast verification mode: run a single short prompt (128 ctx, 16 tokens) to verify CUDA memory capping and clean engine initialization",
     )
     parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit number of dataset samples (e.g. for workloads like longmem)",
+    )
+    parser.add_argument(
+        "--save-reference",
+        default=None,
+        help="Save baseline token IDs and logprobs to JSON as a reference for quality evaluation",
+    )
+    parser.add_argument(
+        "--eval-reference",
+        default=None,
+        help="Path to reference JSON to evaluate quality (Top-1 agreement, KL divergence) against",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output JSON path (default: results/<technique>.json or results/verify_<technique>.json)",
@@ -131,7 +147,7 @@ Examples:
         workload_override = ConcurrentChatWorkload(num_users=args.num_users)
     elif args.workload == "longmem":
         from src.workloads.memory_adherence import LongMemEvalWorkload
-        workload_override = LongMemEvalWorkload()
+        workload_override = LongMemEvalWorkload(max_samples=args.max_samples)
 
     if args.verify:
         contexts = [128]
@@ -158,7 +174,10 @@ Examples:
         dry_run=args.dry_run,
         workload_override=workload_override,
         max_vram_gb=args.max_vram_gb,
+        save_reference=args.save_reference,
+        eval_reference=args.eval_reference,
     )
+
 
     with open(output_path, "w") as f:
         json.dump(run_result.to_dict(), f, indent=2, default=str)

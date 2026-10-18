@@ -15,9 +15,10 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .metrics import calc_percentile
+
 
 FILLER_SENTENCE = "The quick brown fox jumps over the lazy dog. "
 
@@ -41,6 +42,12 @@ class WorkloadOutput:
     ttft_p95_sec: float = 0.0
     inter_token_latencies_ms: list[float] = field(default_factory=list)
     request_ttfts_sec: list[float] = field(default_factory=list)
+
+    # Output tokens, logprobs, and workload-specific summaries
+    generated_token_ids: list[int] = field(default_factory=list)
+    step_logprobs: list[dict[int, float]] = field(default_factory=list)
+    extra_summary: dict[str, Any] = field(default_factory=dict)
+
 
 
 class Workload(ABC):
@@ -99,6 +106,11 @@ def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:
     decode_tokens = gen_tokens - 1 if gen_tokens > 1 else gen_tokens
     tpot_mean = (decode / decode_tokens * 1000.0) if (decode > 0 and decode_tokens > 0) else 0.0
 
+    from .quality import extract_step_logprobs
+
+    gen_token_ids = list(out.outputs[0].token_ids) if len(out.outputs) > 0 else []
+    step_lps = extract_step_logprobs(out)
+
     return WorkloadOutput(
         prompt_tokens=prompt_tokens,
         generated_tokens=gen_tokens,
@@ -109,7 +121,10 @@ def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:
         tpot_p95_ms=round(tpot_mean, 2),
         ttft_p95_sec=round(ttft, 4),
         request_ttfts_sec=[round(ttft, 4)],
+        generated_token_ids=gen_token_ids,
+        step_logprobs=step_lps,
     )
+
 
 
 class SyntheticFiller(Workload):
@@ -185,6 +200,7 @@ class ConcurrentChatWorkload(Workload):
 
         ttfts = []
         decodes = []
+        tpots = []
         tot_prompt_tok = 0
         tot_gen_tok = 0
 
@@ -201,6 +217,9 @@ class ConcurrentChatWorkload(Workload):
             if has_metrics:
                 t = metrics.first_token_time - metrics.arrival_time
                 d = metrics.finished_time - metrics.first_token_time
+                decode_tok = gen_len - 1 if gen_len > 1 else gen_len
+                if d > 0 and decode_tok > 0:
+                    tpots.append(round(d / decode_tok * 1000.0, 2))
             else:
                 t = (end_wall - start_wall) / len(outputs)
                 d = 0.0
@@ -215,6 +234,7 @@ class ConcurrentChatWorkload(Workload):
 
         decode_toks = tot_gen_tok - len(outputs) if tot_gen_tok > len(outputs) else tot_gen_tok
         tpot_mean = (total_decode / decode_toks * 1000.0) if (total_decode > 0 and decode_toks > 0) else 0.0
+        p95_tpot = calc_percentile(tpots, 95.0) if tpots else round(tpot_mean, 2)
 
         return WorkloadOutput(
             prompt_tokens=tot_prompt_tok,
@@ -223,9 +243,12 @@ class ConcurrentChatWorkload(Workload):
             decode_time_sec=round(total_decode, 4),
             total_time_sec=round(total_wall, 4),
             tpot_mean_ms=round(tpot_mean, 2),
-            tpot_p95_ms=round(tpot_mean, 2),
+            tpot_p95_ms=round(p95_tpot, 2),
             ttft_p95_sec=round(p95_ttft, 4),
+            inter_token_latencies_ms=tpots,
+            request_ttfts_sec=ttfts,
         )
+
 
 
 from src.workloads.memory_adherence import LongMemEvalWorkload  # noqa: E402
