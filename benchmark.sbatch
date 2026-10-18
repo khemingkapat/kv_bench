@@ -56,6 +56,7 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 # Default to primary pure dense model (qwen3-4b); accepts aliases (phi4-mini, qwen3.5-4b, etc.)
 MODEL="${1:-qwen3-4b}"
 RUN_FULL_SWEEP="${RUN_FULL_SWEEP:-1}"
+SKIP_HARDWARE_SWEEPS="${SKIP_HARDWARE_SWEEPS:-0}"
 CONTEXTS="512 1024 2048 4096 8192 16384 32768 49152 65536"
 CONCURRENT_CONTEXTS="1024 2048 4096 8192"
 CONCURRENT_USERS="1 4 8 12 16"
@@ -104,30 +105,34 @@ uv run --no-sync main.py \
     --output results/verify_cross_model_16gb.json
 
 if [[ "$RUN_FULL_SWEEP" == "1" ]]; then
-    echo ">> 1. Running Baseline Single-Stream Scaling Sweep (512 - 65536)..."
-    uv run --no-sync main.py \
-        --technique baseline \
-        --model "$MODEL" \
-        --contexts $CONTEXTS \
-        --max-vram-gb 16.0 \
-        --output results/baseline_hardware_16gb.json
-    cp results/baseline_hardware_16gb.json results/baseline_16gb.json
-
-    echo ">> 2. Running Baseline Multi-User Concurrency Grid (1, 4, 8, 12, 16 users across 1024-8192 ctx)..."
-    for U in $CONCURRENT_USERS; do
-        echo "   -> Running concurrency sweep for $U concurrent user(s)..."
+    if [[ "$SKIP_HARDWARE_SWEEPS" != "1" ]]; then
+        echo ">> 1. Running Baseline Single-Stream Scaling Sweep (512 - 65536)..."
         uv run --no-sync main.py \
             --technique baseline \
             --model "$MODEL" \
-            --workload concurrent \
-            --num-users "$U" \
-            --contexts $CONCURRENT_CONTEXTS \
+            --contexts $CONTEXTS \
             --max-vram-gb 16.0 \
-            --output "results/concurrent_${U}users_16gb.json"
-    done
-    uv run --no-sync python scripts/consolidate_concurrency_results.py \
-        --inputs results/concurrent_*users_16gb.json \
-        --output results/concurrent_baseline_16gb.json
+            --output results/baseline_hardware_16gb.json
+        cp results/baseline_hardware_16gb.json results/baseline_16gb.json
+
+        echo ">> 2. Running Baseline Multi-User Concurrency Grid (1, 4, 8, 12, 16 users across 1024-8192 ctx)..."
+        for U in $CONCURRENT_USERS; do
+            echo "   -> Running concurrency sweep for $U concurrent user(s)..."
+            uv run --no-sync main.py \
+                --technique baseline \
+                --model "$MODEL" \
+                --workload concurrent \
+                --num-users "$U" \
+                --contexts $CONCURRENT_CONTEXTS \
+                --max-vram-gb 16.0 \
+                --output "results/concurrent_${U}users_16gb.json"
+        done
+        uv run --no-sync python scripts/consolidate_concurrency_results.py \
+            --inputs results/concurrent_*users_16gb.json \
+            --output results/concurrent_baseline_16gb.json
+    else
+        echo ">> Skipping Steps 1 & 2 (Hardware sweeps already verified and consolidated)."
+    fi
 
     echo ">> 3. Running Baseline Long-Term Memory Adherence & Reference Capture (LongMemEval across contexts)..."
     uv run --no-sync main.py \
