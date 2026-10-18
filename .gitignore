@@ -16,6 +16,11 @@ results/*
 !results/*.example*
 !results/manifests/
 !results/manifests/*
+!results/references/
+!results/references/*
+!results/baseline_hardware_16gb.json
+!results/concurrent_baseline_16gb.json
+!results/longmem_baseline_16gb.json
 
 # Ignore agents directory except for AGENTS.md
 .agents/*

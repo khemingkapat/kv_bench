@@ -1,0 +1,30 @@
+{
+  "model": "qwen3-4b",
+  "technique": "baseline",
+  "contexts": {
+    "512": {
+      "token_ids": [],
+      "step_logprobs": [],
+      "prompt_tokens": 21257,
+      "generated_tokens": 1592
+    },
+    "1024": {
+      "token_ids": [],
+      "step_logprobs": [],
+      "prompt_tokens": 41028,
+      "generated_tokens": 1600
+    },
+    "2048": {
+      "token_ids": [],
+      "step_logprobs": [],
+      "prompt_tokens": 79725,
+      "generated_tokens": 1600
+    },
+    "4096": {
+      "token_ids": [],
+      "step_logprobs": [],
+      "prompt_tokens": 154915,
+      "generated_tokens": 1600
+    }
+  }
+}
