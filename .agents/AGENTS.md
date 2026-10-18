@@ -36,7 +36,11 @@ When working on this repository, **ALWAYS** adhere to the following package mana
   git checkout -b feat/wp1-2-slurm-verification
   ```
 
-### B. Pull Request Protocol
+### B. Pull Request Protocol (EXPLICIT DEVELOPER VERIFICATION REQUIRED)
+* **DO NOT RUSH TO PR:** Never automatically push to origin or open a Pull Request upon finishing code changes.
+* **MANDATORY APPROVAL:** Always pause, present verification results to the user/developer, and only proceed to push or create a PR after explicit human confirmation.
+
+Once explicitly approved by the developer:
 1. Push the feature branch to origin:
    ```bash
    git push -u origin feat/wp<X>-<Y>-<short-description>
