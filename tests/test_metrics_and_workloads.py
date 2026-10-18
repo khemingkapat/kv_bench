@@ -248,6 +248,33 @@ class TestWorkloads(unittest.TestCase):
         workload = LongMemEvalWorkload(max_samples=5)
         self.assertEqual(len(workload.samples), 5)
 
+    def test_longmemeval_samples_per_task_and_seed(self):
+        # 1 sample per task with fixed seed
+        w1 = LongMemEvalWorkload(samples_per_task=1, seed=42)
+        self.assertEqual(len(w1.samples), 5)
+        tasks1 = {s["task_type"] for s in w1.samples}
+        expected_tasks = {
+            "fact_recall",
+            "cross_session_reasoning",
+            "information_update",
+            "relative_timeframe",
+            "unanswerable_refusal",
+        }
+        self.assertEqual(tasks1, expected_tasks)
+
+        # Exact same seed -> exact same sample IDs
+        w2 = LongMemEvalWorkload(samples_per_task=1, seed=42)
+        self.assertEqual([s["id"] for s in w1.samples], [s["id"] for s in w2.samples])
+
+        # 2 samples per task
+        w3 = LongMemEvalWorkload(samples_per_task=2, seed=42)
+        self.assertEqual(len(w3.samples), 10)
+        from collections import Counter
+        counts = Counter(s["task_type"] for s in w3.samples)
+        for t in expected_tasks:
+            self.assertEqual(counts[t], 2)
+
+
     def test_longmemeval_run_mock(self):
         import sys
         from unittest.mock import MagicMock

@@ -61,7 +61,7 @@ EVAL_CONTEXTS="512 1024 2048 4096"
 
 echo "Model Selected: $MODEL"
 
-echo ">> 0. Running Fast Verification Sanity Check (128 ctx, 16 tokens, 16.0 GB VRAM cap)..."
+echo ">> 0. Running Fast Verification & Reference Capture (128 ctx, 16 tokens, 16.0 GB VRAM cap)..."
 uv run --no-sync main.py \
     --technique baseline \
     --model "$MODEL" \
@@ -70,17 +70,27 @@ uv run --no-sync main.py \
     --save-reference results/references/verify_ref.json \
     --output results/verify_16gb.json
 
-echo ">> 0b. Running Small Test Set Sanity Check (LongMemEval 5 samples, 512 ctx, 16.0 GB VRAM cap)..."
+echo ">> 0a. Running Identity Quality Check (evaluating against reference, 128 ctx)..."
+uv run --no-sync main.py \
+    --technique baseline \
+    --model "$MODEL" \
+    --verify \
+    --max-vram-gb 16.0 \
+    --eval-reference results/references/verify_ref.json \
+    --output results/verify_identity_16gb.json
+
+echo ">> 0b. Running Balanced LongMemEval Sanity Check (1 sample per task, seed 42, 512 ctx)..."
 uv run --no-sync main.py \
     --technique baseline \
     --model "$MODEL" \
     --workload longmem \
-    --dataset-path src/data/longmemeval_subset.json \
     --contexts 512 \
     --max-tokens 32 \
-    --max-samples 5 \
+    --samples-per-task 1 \
+    --seed 42 \
     --max-vram-gb 16.0 \
     --output results/sanity_longmem_16gb.json
+
 
 
 if [[ "$RUN_FULL_SWEEP" == "1" ]]; then

@@ -80,7 +80,8 @@ def load_continuous_prefix(context_length: int, pg19_dir: str | None = None) -> 
 def _timed_generate(llm, prompt: str, max_tokens: int) -> WorkloadOutput:
     from vllm import SamplingParams
 
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
+    sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=5)
+
 
     start_wall = time.perf_counter()
     outputs = llm.generate([prompt], sampling_params)

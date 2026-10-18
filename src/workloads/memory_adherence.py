@@ -37,12 +37,41 @@ class LongMemEvalWorkload(Workload):
     and evaluates category-level and overall memory adherence accuracy.
     """
 
-    def __init__(self, dataset_path: str = DEFAULT_DATASET_PATH, max_samples: int | None = None):
+    def __init__(
+        self,
+        dataset_path: str = DEFAULT_DATASET_PATH,
+        samples_per_task: int | None = None,
+        max_samples: int | None = None,
+        seed: int | None = None,
+    ):
+        import random
+
         self.dataset_path = dataset_path
+        self.samples_per_task = samples_per_task
+        self.seed = seed
+
         with open(self.dataset_path, "r", encoding="utf-8") as f:
-            self.samples: list[dict[str, Any]] = json.load(f)
-        if max_samples is not None and max_samples > 0:
-            self.samples = self.samples[:max_samples]
+            all_samples: list[dict[str, Any]] = json.load(f)
+
+        effective_per_task = samples_per_task
+        if effective_per_task is None and max_samples is not None and max_samples > 0:
+            effective_per_task = max(1, max_samples // 5)
+
+        if effective_per_task is not None and effective_per_task > 0:
+            tasks: dict[str, list[dict[str, Any]]] = {}
+            for s in all_samples:
+                tasks.setdefault(s.get("task_type", "unknown"), []).append(s)
+
+            rng = random.Random(seed) if seed is not None else random
+            selected: list[dict[str, Any]] = []
+            for task_type in sorted(tasks.keys()):
+                category_samples = tasks[task_type]
+                n = min(effective_per_task, len(category_samples))
+                selected.extend(rng.sample(category_samples, n))
+            self.samples = selected
+        else:
+            self.samples = all_samples
+
 
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
@@ -96,6 +125,11 @@ class LongMemEvalWorkload(Workload):
 
         # Evaluate quality metrics via unified quality scorer
         eval_summary = score_longmemeval_dataset(self.samples, predictions, refusal_triggers=REFUSAL_TRIGGERS)
+        if self.samples_per_task is not None:
+            eval_summary["longmem_samples_per_task"] = self.samples_per_task
+        if self.seed is not None:
+            eval_summary["longmem_seed"] = self.seed
+
 
         total_wall = end_wall - start_wall
         total_samples = len(self.samples)

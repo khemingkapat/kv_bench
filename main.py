@@ -110,6 +110,18 @@ Examples:
         help="Fast verification mode: run a single short prompt (128 ctx, 16 tokens) to verify CUDA memory capping and clean engine initialization",
     )
     parser.add_argument(
+        "--samples-per-task",
+        type=int,
+        default=None,
+        help="Number of samples to draw per task category in LongMemEval (e.g. 1, 2, up to 10)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for deterministic sampling across evaluation runs (default: None for non-deterministic)",
+    )
+    parser.add_argument(
         "--max-samples",
         type=int,
         default=None,
@@ -152,10 +164,15 @@ Examples:
         workload_override = ConcurrentChatWorkload(num_users=args.num_users)
     elif args.workload == "longmem":
         from src.workloads.memory_adherence import LongMemEvalWorkload
-        kw = {"max_samples": args.max_samples}
+        kw = {
+            "samples_per_task": args.samples_per_task,
+            "max_samples": args.max_samples,
+            "seed": args.seed,
+        }
         if args.dataset_path:
             kw["dataset_path"] = args.dataset_path
         workload_override = LongMemEvalWorkload(**kw)
+
 
 
     if args.verify:
