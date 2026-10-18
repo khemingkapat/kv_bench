@@ -101,8 +101,12 @@ class LongMemEvalWorkload(Workload):
         total_samples = len(self.samples)
         mean_ttft = sum(ttfts) / len(ttfts) if ttfts else (total_wall / total_samples if total_samples > 0 else 0.0)
         p95_ttft = calc_percentile(ttfts, 95.0) if ttfts else mean_ttft
-        mean_tpot = sum(tpots) / len(tpots) if tpots else 0.0
-        p95_tpot = calc_percentile(tpots, 95.0) if tpots else mean_tpot
+        total_decode_sec = max(0.0, total_wall - mean_ttft)
+        decode_tokens = total_gen_tok - total_samples if total_gen_tok > total_samples else total_gen_tok
+        fallback_tpot = (total_decode_sec / decode_tokens * 1000.0) if (decode_tokens > 0 and total_decode_sec > 0) else 0.0
+        mean_tpot = sum(tpots) / len(tpots) if tpots else fallback_tpot
+        p95_tpot = calc_percentile(tpots, 95.0) if tpots else round(mean_tpot, 2)
+
 
         out = WorkloadOutput(
             prompt_tokens=total_prompt_tok,
