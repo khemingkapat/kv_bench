@@ -78,7 +78,7 @@ class LongMemEvalWorkload(Workload):
 
         from src.core.workload import _make_prompt
 
-        target_words = max(30, int(context_length / 1.3))
+        target_words = max(30, int(context_length * 0.7))
 
         prompts = []
         for s in self.samples:
