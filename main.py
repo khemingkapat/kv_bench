@@ -110,6 +110,39 @@ Examples:
         help="Fast verification mode: run a single short prompt (128 ctx, 16 tokens) to verify CUDA memory capping and clean engine initialization",
     )
     parser.add_argument(
+        "--samples-per-task",
+        type=int,
+        default=None,
+        help="Number of samples to draw per task category in LongMemEval (e.g. 1, 2, up to 10)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for deterministic sampling across evaluation runs (default: None for non-deterministic)",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit number of dataset samples (e.g. for workloads like longmem)",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        default=None,
+        help="Custom dataset path for workloads like longmem",
+    )
+    parser.add_argument(
+        "--save-reference",
+        default=None,
+        help="Save baseline token IDs and logprobs to JSON as a reference for quality evaluation",
+    )
+    parser.add_argument(
+        "--eval-reference",
+        default=None,
+        help="Path to reference JSON to evaluate quality (Top-1 agreement, KL divergence) against",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output JSON path (default: results/<technique>.json or results/verify_<technique>.json)",
@@ -131,7 +164,16 @@ Examples:
         workload_override = ConcurrentChatWorkload(num_users=args.num_users)
     elif args.workload == "longmem":
         from src.workloads.memory_adherence import LongMemEvalWorkload
-        workload_override = LongMemEvalWorkload()
+        kw = {
+            "samples_per_task": args.samples_per_task,
+            "max_samples": args.max_samples,
+            "seed": args.seed,
+        }
+        if args.dataset_path:
+            kw["dataset_path"] = args.dataset_path
+        workload_override = LongMemEvalWorkload(**kw)
+
+
 
     if args.verify:
         contexts = [128]
@@ -158,7 +200,10 @@ Examples:
         dry_run=args.dry_run,
         workload_override=workload_override,
         max_vram_gb=args.max_vram_gb,
+        save_reference=args.save_reference,
+        eval_reference=args.eval_reference,
     )
+
 
     with open(output_path, "w") as f:
         json.dump(run_result.to_dict(), f, indent=2, default=str)

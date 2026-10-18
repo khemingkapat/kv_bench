@@ -26,13 +26,21 @@ from .axis import axis_names
 from .config import resolve_model_target
 from .metrics import (
     ResultEntry,
+    format_metrics_summary,
     host_rss_mb,
     peak_gpu_memory_mb,
     reset_gpu_memory,
     throughput,
+    validate_metrics,
+)
+from .quality import (
+    evaluate_fidelity_against_reference,
+    load_quality_reference,
+    save_quality_reference,
 )
 from .technique import Technique
 from .workload import Workload
+
 
 
 @dataclass
@@ -123,7 +131,10 @@ def run_benchmark(
     dry_run: bool = False,
     workload_override: "Workload | None" = None,
     max_vram_gb: float | None = 16.0,
+    save_reference: str | None = None,
+    eval_reference: str | None = None,
 ) -> RunResult:
+
     """Run a technique across all requested context lengths.
 
     Args:
@@ -156,6 +167,7 @@ def run_benchmark(
     workload = workload_override if workload_override is not None else technique.workload()
     axes = axis_names(technique.axes)
     entries: list[ResultEntry] = []
+    reference_records: dict[str, Any] = {}
 
     gpu_name = torch.cuda.get_device_name(0) if (torch is not None and torch.cuda.is_available()) else "CPU (dry-run)"
     effective_utilization = gpu_utilization
@@ -209,7 +221,7 @@ def run_benchmark(
                 model=target_model,
                 dtype=dtype_choice,
                 gpu_memory_utilization=effective_utilization,
-                max_model_len=int(ctx * 1.25) + max_tokens + 512,
+                max_model_len=engine_kwargs.pop("max_model_len", max(2048, int(ctx * 1.5) + max_tokens + 512)),
                 trust_remote_code=True,
                 enforce_eager=True,
                 **engine_kwargs,
@@ -234,6 +246,27 @@ def run_benchmark(
                     extra["hardware_vram_gb"] = round(total_mem_gb, 2)
             if hasattr(output, "extra_summary") and isinstance(output.extra_summary, dict):
                 extra.update(output.extra_summary)
+
+            # Evaluate fidelity against reference if requested
+            if eval_reference and os.path.exists(eval_reference):
+                ref_data = load_quality_reference(eval_reference)
+                fidelity = evaluate_fidelity_against_reference(
+                    ref_data,
+                    ctx,
+                    target_token_ids=getattr(output, "generated_token_ids", []),
+                    target_step_logprobs=getattr(output, "step_logprobs", None),
+                )
+                extra.update(fidelity)
+
+            # Record reference generation if requested
+            if save_reference:
+                reference_records[str(ctx)] = {
+                    "token_ids": getattr(output, "generated_token_ids", []),
+                    "step_logprobs": getattr(output, "step_logprobs", []),
+                    "prompt_tokens": output.prompt_tokens,
+                    "generated_tokens": output.generated_tokens,
+                }
+
             memcpy_bytes_per_token = 0.0
             if trace_path:
                 memcpy_stats = _parse_memcpy_summary(trace_path)
@@ -264,23 +297,11 @@ def run_benchmark(
                 extra=extra,
             )
 
-            delta_label = (
-                f" | cold TTFT {output.cold_ttft_sec:.3f}s → warm {output.ttft_sec:.3f}s"
-                if output.cold_ttft_sec > 0
-                else ""
-            )
-            tail_label = (
-                f" | TTFT p95 {output.ttft_p95_sec:.3f}s"
-                if output.ttft_p95_sec != output.ttft_sec
-                else ""
-            )
-            print(
-                f" -> peak VRAM {peak_alloc:.1f} MB | TTFT {output.ttft_sec:.3f}s | "
-                f"TPOT {output.tpot_mean_ms:.1f} ms | {tp:.2f} tok/s | "
-                f"host RSS Δ {entry.host_rss_delta_mb:+.0f} MB"
-                + delta_label
-                + tail_label
-            )
+            max_vram_mb = (max_vram_gb * 1024.0) if max_vram_gb is not None else None
+            validation_errs = validate_metrics(entry, max_vram_mb=max_vram_mb)
+            print(f" -> {format_metrics_summary(entry)}")
+            for v_err in validation_errs:
+                print(f"    [METRIC WARNING] {v_err}")
 
         except Exception as e:  # noqa: BLE001 -- a failed context length shouldn't kill the sweep
             entry = ResultEntry(requested_ctx=ctx, status="FAILED", axes=axes, error=str(e))
@@ -292,12 +313,24 @@ def run_benchmark(
 
         entries.append(entry)
 
+    if save_reference and reference_records:
+        save_quality_reference(
+            save_reference,
+            {
+                "model": model,
+                "technique": technique.name,
+                "contexts": reference_records,
+            },
+        )
+        print(f"Saved quality reference -> {save_reference}")
+
     return RunResult(
         model=model,
         technique=technique.name,
         axes=axes,
         results=entries,
     )
+
 
 
 def _run_with_profiler(llm, workload, ctx: int, max_tokens: int, profile_dir: str, technique_name: str) -> str:

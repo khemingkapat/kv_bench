@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from src.core.metrics import calc_percentile
+from src.core.quality import DEFAULT_REFUSAL_TRIGGERS, score_longmemeval_dataset
 from src.core.workload import Workload, WorkloadOutput
 
 BENCHMARK_DATASET_PATH = os.path.abspath(
@@ -28,17 +29,7 @@ DEFAULT_DATASET_PATH = (
     BENCHMARK_DATASET_PATH if os.path.exists(BENCHMARK_DATASET_PATH) else FALLBACK_DATASET_PATH
 )
 
-REFUSAL_TRIGGERS = [
-    "not mentioned",
-    "don't know",
-    "do not know",
-    "cannot answer",
-    "can't answer",
-    "no information",
-    "unknown",
-    "not provided",
-    "unable to find",
-]
+REFUSAL_TRIGGERS = DEFAULT_REFUSAL_TRIGGERS
 
 
 class LongMemEvalWorkload(Workload):
@@ -46,23 +37,62 @@ class LongMemEvalWorkload(Workload):
     and evaluates category-level and overall memory adherence accuracy.
     """
 
-    def __init__(self, dataset_path: str = DEFAULT_DATASET_PATH):
+    def __init__(
+        self,
+        dataset_path: str = DEFAULT_DATASET_PATH,
+        samples_per_task: int | None = None,
+        max_samples: int | None = None,
+        seed: int | None = None,
+    ):
+        import random
+
         self.dataset_path = dataset_path
-        with open(self.dataset_path, "r") as f:
-            self.samples: list[dict[str, Any]] = json.load(f)
+        self.samples_per_task = samples_per_task
+        self.seed = seed
+
+        with open(self.dataset_path, "r", encoding="utf-8") as f:
+            all_samples: list[dict[str, Any]] = json.load(f)
+
+        effective_per_task = samples_per_task
+        if effective_per_task is None and max_samples is not None and max_samples > 0:
+            effective_per_task = max(1, max_samples // 5)
+
+        if effective_per_task is not None and effective_per_task > 0:
+            tasks: dict[str, list[dict[str, Any]]] = {}
+            for s in all_samples:
+                tasks.setdefault(s.get("task_type", "unknown"), []).append(s)
+
+            rng = random.Random(seed) if seed is not None else random
+            selected: list[dict[str, Any]] = []
+            for task_type in sorted(tasks.keys()):
+                category_samples = tasks[task_type]
+                n = min(effective_per_task, len(category_samples))
+                selected.extend(rng.sample(category_samples, n))
+            self.samples = selected
+        else:
+            self.samples = all_samples
+
 
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
 
         from src.core.workload import _make_prompt
 
-        prefix = ""
-        if context_length > 256:
-            prefix = _make_prompt(context_length - 150) + "\n\n[Chat History Continued]\n"
+        target_words = max(30, int(context_length / 1.3))
 
-        prompts = [
-            f"{prefix}{s['context']}\nUser: {s['question']}\nAssistant:" for s in self.samples
-        ]
+        prompts = []
+        for s in self.samples:
+            words = s.get("context", "").split()
+            if len(words) > target_words:
+                ctx_text = " ".join(words[-target_words:])
+                prefix = ""
+            else:
+                ctx_text = s.get("context", "")
+                remaining = target_words - len(words)
+                prefix = (_make_prompt(remaining) + "\n\n[Chat History Continued]\n") if remaining > 20 else ""
+
+            prompts.append(f"{prefix}{ctx_text}\nUser: {s['question']}\nAssistant:")
+
 
         sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
 
@@ -70,52 +100,47 @@ class LongMemEvalWorkload(Workload):
         outputs = llm.generate(prompts, sampling_params)
         end_wall = time.perf_counter()
 
-        category_counts: dict[str, int] = {}
-        category_correct: dict[str, int] = {}
-        total_correct = 0
+        predictions: list[str] = []
         total_prompt_tok = 0
         total_gen_tok = 0
         ttfts: list[float] = []
+        tpots: list[float] = []
 
-        for sample, out in zip(self.samples, outputs):
-            task = sample["task_type"]
-            expected = sample["expected_answer"].lower()
-            is_unanswerable = sample.get("unanswerable", False)
-
-            gen_text = out.outputs[0].text.strip().lower()
+        for out in outputs:
+            gen_text = out.outputs[0].text.strip()
+            predictions.append(gen_text)
             total_prompt_tok += len(out.prompt_token_ids)
-            total_gen_tok += len(out.outputs[0].token_ids)
-
-            # Evaluate correctness
-            if is_unanswerable:
-                correct = any(trig in gen_text for trig in REFUSAL_TRIGGERS)
-            else:
-                correct = expected in gen_text
-
-            category_counts[task] = category_counts.get(task, 0) + 1
-            if correct:
-                category_correct[task] = category_correct.get(task, 0) + 1
-                total_correct += 1
+            gen_len = len(out.outputs[0].token_ids)
+            total_gen_tok += gen_len
 
             metrics = getattr(out, "metrics", None)
             if metrics and hasattr(metrics, "first_token_time") and hasattr(metrics, "arrival_time"):
-                ttfts.append(round(metrics.first_token_time - metrics.arrival_time, 4))
+                sample_ttft = metrics.first_token_time - metrics.arrival_time
+                ttfts.append(round(sample_ttft, 4))
+                if hasattr(metrics, "finished_time"):
+                    sample_decode = metrics.finished_time - metrics.first_token_time
+                    decode_tok = gen_len - 1 if gen_len > 1 else gen_len
+                    if sample_decode > 0 and decode_tok > 0:
+                        tpots.append(round(sample_decode / decode_tok * 1000.0, 2))
 
-        # Accuracies
-        total_samples = len(self.samples)
-        overall_acc = round(total_correct / total_samples, 4) if total_samples > 0 else 0.0
+        # Evaluate quality metrics via unified quality scorer
+        eval_summary = score_longmemeval_dataset(self.samples, predictions, refusal_triggers=REFUSAL_TRIGGERS)
+        if self.samples_per_task is not None:
+            eval_summary["longmem_samples_per_task"] = self.samples_per_task
+        if self.seed is not None:
+            eval_summary["longmem_seed"] = self.seed
 
-        eval_summary = {
-            "longmem_acc_overall": overall_acc,
-            "longmem_total_samples": total_samples,
-        }
-        for task, count in category_counts.items():
-            corr = category_correct.get(task, 0)
-            eval_summary[f"longmem_acc_{task}"] = round(corr / count, 4) if count > 0 else 0.0
 
         total_wall = end_wall - start_wall
+        total_samples = len(self.samples)
         mean_ttft = sum(ttfts) / len(ttfts) if ttfts else (total_wall / total_samples if total_samples > 0 else 0.0)
         p95_ttft = calc_percentile(ttfts, 95.0) if ttfts else mean_ttft
+        total_decode_sec = max(0.0, total_wall - mean_ttft)
+        decode_tokens = total_gen_tok - total_samples if total_gen_tok > total_samples else total_gen_tok
+        fallback_tpot = (total_decode_sec / decode_tokens * 1000.0) if (decode_tokens > 0 and total_decode_sec > 0) else 0.0
+        mean_tpot = sum(tpots) / len(tpots) if tpots else fallback_tpot
+        p95_tpot = calc_percentile(tpots, 95.0) if tpots else round(mean_tpot, 2)
+
 
         out = WorkloadOutput(
             prompt_tokens=total_prompt_tok,
@@ -123,9 +148,13 @@ class LongMemEvalWorkload(Workload):
             ttft_sec=round(mean_ttft, 4),
             decode_time_sec=round(total_wall - mean_ttft, 4),
             total_time_sec=round(total_wall, 4),
+            tpot_mean_ms=round(mean_tpot, 2),
+            tpot_p95_ms=round(p95_tpot, 2),
             ttft_p95_sec=round(p95_ttft, 4),
+            inter_token_latencies_ms=tpots,
             request_ttfts_sec=ttfts,
         )
         # Store category accuracies on out for harness extraction
         out.extra_summary = eval_summary  # type: ignore[attr-defined]
         return out
+

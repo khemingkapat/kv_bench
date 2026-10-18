@@ -139,3 +139,58 @@ class ResultEntry:
         if self.cold_ttft_sec == 0.0:
             return 0.0
         return round(self.cold_ttft_sec - self.ttft_sec, 4)
+
+
+def validate_metrics(entry: ResultEntry, max_vram_mb: float | None = None) -> list[str]:
+    """Validate ResultEntry consistency and physical boundary constraints.
+
+    Returns a list of error/warning strings (empty if valid).
+    """
+    errors: list[str] = []
+    if entry.status == "SUCCESS":
+        if entry.prompt_tokens < 0 or entry.generated_tokens < 0:
+            errors.append(f"Invalid token counts: prompt={entry.prompt_tokens}, generated={entry.generated_tokens}")
+        if entry.ttft_sec < 0 or entry.decode_time_sec < 0 or entry.total_time_sec < 0:
+            errors.append(
+                f"Negative timing detected: ttft={entry.ttft_sec}s, decode={entry.decode_time_sec}s, total={entry.total_time_sec}s"
+            )
+        if entry.tpot_mean_ms < 0 or entry.tpot_p95_ms < 0:
+            errors.append(f"Negative TPOT detected: mean={entry.tpot_mean_ms}ms, p95={entry.tpot_p95_ms}ms")
+        if entry.peak_alloc_mb < 0:
+            errors.append(f"Negative peak VRAM allocation: {entry.peak_alloc_mb} MB")
+        if max_vram_mb is not None and entry.peak_alloc_mb > max_vram_mb:
+            errors.append(f"Peak VRAM ({entry.peak_alloc_mb:.1f} MB) exceeded cap ({max_vram_mb:.1f} MB)")
+    return errors
+
+
+def format_metrics_summary(entry: ResultEntry) -> str:
+    """Format core metrics of a ResultEntry into a concise, readable string."""
+    if entry.status != "SUCCESS":
+        err_msg = f": {entry.error}" if entry.error else ""
+        return f"[{entry.status}]{err_msg}"
+
+    delta_label = (
+        f" | cold TTFT {entry.cold_ttft_sec:.3f}s → warm {entry.ttft_sec:.3f}s"
+        if entry.cold_ttft_sec > 0
+        else ""
+    )
+    tail_label = (
+        f" | TTFT p95 {entry.ttft_p95_sec:.3f}s"
+        if entry.ttft_p95_sec != entry.ttft_sec and entry.ttft_p95_sec > 0
+        else ""
+    )
+    memcpy_label = (
+        f" | memcpy {entry.memcpy_bytes_per_token:.1f} B/tok"
+        if entry.memcpy_bytes_per_token > 0
+        else ""
+    )
+
+    return (
+        f"peak VRAM {entry.peak_alloc_mb:.1f} MB | TTFT {entry.ttft_sec:.3f}s | "
+        f"TPOT {entry.tpot_mean_ms:.1f} ms (p95: {entry.tpot_p95_ms:.1f} ms) | "
+        f"{entry.throughput_tok_per_sec:.2f} tok/s | host RSS Δ {entry.host_rss_delta_mb:+.0f} MB"
+        + delta_label
+        + tail_label
+        + memcpy_label
+    )
+
