@@ -92,6 +92,15 @@ uv run --no-sync main.py \
     --max-vram-gb 16.0 \
     --output results/sanity_longmem_16gb.json
 
+echo ">> 0c. Running Cross-Model Divergence Calibration (evaluating qwen3-1.7b against qwen3-4b reference)..."
+uv run --no-sync main.py \
+    --technique baseline \
+    --model qwen3-1.7b \
+    --verify \
+    --max-vram-gb 16.0 \
+    --eval-reference results/references/verify_ref.json \
+    --output results/verify_cross_model_16gb.json
+
 
 
 if [[ "$RUN_FULL_SWEEP" == "1" ]]; then

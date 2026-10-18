@@ -386,6 +386,7 @@ class TestComparison(unittest.TestCase):
         table = format_markdown_table("flexgen_style", "baseline", rows)
         self.assertIn("50.0%", table)
         self.assertIn("75.0%", table)
+        self.assertIn("0.0050", table)
 
 
 if __name__ == "__main__":

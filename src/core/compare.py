@@ -85,20 +85,21 @@ def format_markdown_table(
     lines = [
         f"### Comparative Evaluation: `{target_name}` vs. `{baseline_name}`",
         "",
-        "| Context | Base VRAM (MB) | Opt VRAM (MB) | VRAM Reduct (%) | Base TTFT (s) | Opt TTFT (s) | TP (tok/s) | TPOT (ms) | PCIe Reduct (%) | Top-1 Match | LongMem Acc |",
-        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        "| Context | Base VRAM (MB) | Opt VRAM (MB) | VRAM Reduct (%) | Base TTFT (s) | Opt TTFT (s) | TP (tok/s) | TPOT (ms) | PCIe Reduct (%) | Top-1 Match | KL Div | LongMem Acc |",
+        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ]
 
     for r in rows:
         vram_red = f"{r['vram_reduction_pct']:+.1f}%" if r['vram_reduction_pct'] != 0 else "-"
         pcie_red = f"{r['pcie_reduction_pct']:+.1f}%" if r['pcie_reduction_pct'] != 0 else "-"
         top1 = f"{r['top1_agreement']*100:.1f}%" if r['top1_agreement'] is not None else "-"
+        kl_div = f"{r['kl_div_mean']:.4f}" if r['kl_div_mean'] is not None else "-"
         longmem = f"{r['longmem_acc_overall']*100:.1f}%" if r['longmem_acc_overall'] is not None else "-"
 
         lines.append(
             f"| {r['ctx']} | {r['baseline_vram_mb']:.1f} | {r['target_vram_mb']:.1f} | {vram_red} | "
             f"{r['baseline_ttft_sec']:.3f} | {r['target_ttft_sec']:.3f} | {r['target_tp']:.1f} | "
-            f"{r['tpot_mean_ms']:.1f} | {pcie_red} | {top1} | {longmem} |"
+            f"{r['tpot_mean_ms']:.1f} | {pcie_red} | {top1} | {kl_div} | {longmem} |"
         )
 
     return "\n".join(lines)
