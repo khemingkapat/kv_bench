@@ -34,10 +34,10 @@ LONGMEMEVAL_ORACLE_URL = (
 )
 
 # Mapping upstream LongMemEval question_type to our 5 benchmark capabilities
+# Exclude single-session-preference as it contains open-ended subjective rubrics
 TASK_TYPE_MAP = {
     "single-session-user": "fact_recall",
     "single-session-assistant": "fact_recall",
-    "single-session-preference": "fact_recall",
     "multi-session": "cross_session_reasoning",
     "knowledge-update": "information_update",
     "temporal-reasoning": "relative_timeframe",

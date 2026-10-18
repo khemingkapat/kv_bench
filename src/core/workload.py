@@ -249,7 +249,3 @@ class ConcurrentChatWorkload(Workload):
             inter_token_latencies_ms=tpots,
             request_ttfts_sec=ttfts,
         )
-
-
-
-from src.workloads.memory_adherence import LongMemEvalWorkload  # noqa: E402

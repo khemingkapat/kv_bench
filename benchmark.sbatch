@@ -84,6 +84,7 @@ uv run --no-sync main.py \
     --technique baseline \
     --model "$MODEL" \
     --workload longmem \
+    --dataset-path src/data/longmemeval_subset.json \
     --contexts 512 \
     --max-tokens 32 \
     --samples-per-task 1 \

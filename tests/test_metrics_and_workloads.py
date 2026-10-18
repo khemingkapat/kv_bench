@@ -204,16 +204,43 @@ class TestQualityMetrics(unittest.TestCase):
         loaded = load_quality_reference(temp_path)
         self.assertEqual(loaded["model"], "qwen3-4b")
 
-        fidelity = evaluate_fidelity_against_reference(loaded, 512, [10, 20, 30])
+        # In-memory target with int token IDs vs loaded reference (which was serialized to JSON strings)
+        target_step_lps = [{10: -0.1}, {20: -0.2}, {30: -0.3}]
+        fidelity = evaluate_fidelity_against_reference(
+            loaded, 512, [10, 20, 30], target_step_logprobs=target_step_lps
+        )
         self.assertAlmostEqual(fidelity["top1_agreement"], 1.0)
+        self.assertAlmostEqual(fidelity["kl_div_mean"], 0.0, places=4)
+        self.assertAlmostEqual(fidelity["kl_div_p99"], 0.0, places=4)
 
     def test_score_longmemeval(self):
-        from src.core.quality import score_longmemeval_dataset, score_longmemeval_sample
+        from src.core.quality import (
+            compute_token_f1,
+            extract_candidate_answers,
+            score_longmemeval_dataset,
+            score_longmemeval_sample,
+        )
 
         self.assertTrue(score_longmemeval_sample("Paris is the capital of France.", "Paris"))
         self.assertFalse(score_longmemeval_sample("London is the capital of England.", "Paris"))
         self.assertTrue(score_longmemeval_sample("I don't know the answer based on the context.", "", is_unanswerable=True))
         self.assertFalse(score_longmemeval_sample("The answer is 42.", "", is_unanswerable=True))
+
+        # Candidate extraction and robust matching
+        cands = extract_candidate_answers("25 minutes and 50 seconds (or 25:50)")
+        self.assertIn("25:50", cands)
+        self.assertIn("25 minutes and 50 seconds", cands)
+        self.assertTrue(score_longmemeval_sample("It took 25:50 to finish.", "25 minutes and 50 seconds (or 25:50)"))
+
+        # Number word vs digit
+        self.assertTrue(score_longmemeval_sample("I have four cats.", "4"))
+        self.assertTrue(score_longmemeval_sample("I visited 3 doctors.", "three"))
+
+        # Token F1
+        f1_perfect = compute_token_f1("Paris France", "Paris France")
+        self.assertEqual(f1_perfect, 1.0)
+        f1_partial = compute_token_f1("The answer is Paris", "Paris")
+        self.assertGreater(f1_partial, 0.0)
 
         samples = [
             {"task_type": "fact_recall", "expected_answer": "Paris", "unanswerable": False},
@@ -224,6 +251,8 @@ class TestQualityMetrics(unittest.TestCase):
         self.assertEqual(res["longmem_acc_overall"], 1.0)
         self.assertEqual(res["longmem_acc_fact_recall"], 1.0)
         self.assertEqual(res["longmem_acc_unanswerable_refusal"], 1.0)
+        self.assertIn("longmem_f1_overall", res)
+        self.assertGreater(res["longmem_f1_overall"], 0.0)
 
 
 class TestWorkloads(unittest.TestCase):
