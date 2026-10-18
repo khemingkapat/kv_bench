@@ -116,6 +116,11 @@ Examples:
         help="Limit number of dataset samples (e.g. for workloads like longmem)",
     )
     parser.add_argument(
+        "--dataset-path",
+        default=None,
+        help="Custom dataset path for workloads like longmem",
+    )
+    parser.add_argument(
         "--save-reference",
         default=None,
         help="Save baseline token IDs and logprobs to JSON as a reference for quality evaluation",
@@ -147,7 +152,11 @@ Examples:
         workload_override = ConcurrentChatWorkload(num_users=args.num_users)
     elif args.workload == "longmem":
         from src.workloads.memory_adherence import LongMemEvalWorkload
-        workload_override = LongMemEvalWorkload(max_samples=args.max_samples)
+        kw = {"max_samples": args.max_samples}
+        if args.dataset_path:
+            kw["dataset_path"] = args.dataset_path
+        workload_override = LongMemEvalWorkload(**kw)
+
 
     if args.verify:
         contexts = [128]

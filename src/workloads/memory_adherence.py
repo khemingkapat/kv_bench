@@ -47,15 +47,20 @@ class LongMemEvalWorkload(Workload):
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
 
-        from src.core.workload import _make_prompt
+        target_words = max(30, int(context_length / 1.3))
+        prompts = []
+        for s in self.samples:
+            words = s.get("context", "").split()
+            if len(words) > target_words:
+                ctx_text = " ".join(words[-target_words:])
+                prefix = ""
+            else:
+                ctx_text = s.get("context", "")
+                remaining = target_words - len(words)
+                prefix = (_make_prompt(remaining) + "\n\n[Chat History Continued]\n") if remaining > 20 else ""
 
-        prefix = ""
-        if context_length > 256:
-            prefix = _make_prompt(context_length - 150) + "\n\n[Chat History Continued]\n"
+            prompts.append(f"{prefix}{ctx_text}\nUser: {s['question']}\nAssistant:")
 
-        prompts = [
-            f"{prefix}{s['context']}\nUser: {s['question']}\nAssistant:" for s in self.samples
-        ]
 
         sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
 

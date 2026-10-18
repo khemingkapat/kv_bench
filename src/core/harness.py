@@ -221,7 +221,7 @@ def run_benchmark(
                 model=target_model,
                 dtype=dtype_choice,
                 gpu_memory_utilization=effective_utilization,
-                max_model_len=int(ctx * 1.25) + max_tokens + 512,
+                max_model_len=engine_kwargs.pop("max_model_len", max(2048, int(ctx * 1.5) + max_tokens + 512)),
                 trust_remote_code=True,
                 enforce_eager=True,
                 **engine_kwargs,

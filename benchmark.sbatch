@@ -75,11 +75,13 @@ uv run --no-sync main.py \
     --technique baseline \
     --model "$MODEL" \
     --workload longmem \
+    --dataset-path src/data/longmemeval_subset.json \
     --contexts 512 \
     --max-tokens 32 \
     --max-samples 5 \
     --max-vram-gb 16.0 \
     --output results/sanity_longmem_16gb.json
+
 
 if [[ "$RUN_FULL_SWEEP" == "1" ]]; then
 
