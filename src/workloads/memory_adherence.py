@@ -47,7 +47,10 @@ class LongMemEvalWorkload(Workload):
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
 
+        from src.core.workload import _make_prompt
+
         target_words = max(30, int(context_length / 1.3))
+
         prompts = []
         for s in self.samples:
             words = s.get("context", "").split()
