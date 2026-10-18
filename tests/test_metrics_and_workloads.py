@@ -423,6 +423,37 @@ class TestComparison(unittest.TestCase):
             self.assertEqual(merged["concurrency_grid"][0]["num_users"], 1)
             self.assertEqual(merged["concurrency_grid"][1]["num_users"], 4)
 
+    def test_subprocess_isolation_dry_run(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = os.path.join(tmpdir, "isolated_sweep.json")
+            cmd = [
+                sys.executable,
+                "main.py",
+                "--technique", "baseline",
+                "--model", "qwen3-4b",
+                "--contexts", "512", "1024",
+                "--dry-run",
+                "--force-isolation",
+                "--output", out_file,
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, msg=f"Subprocess failed:\n{res.stderr}")
+            self.assertTrue(os.path.exists(out_file))
+
+            with open(out_file) as f:
+                data = json.load(f)
+
+            self.assertEqual(data["model"], "qwen3-4b")
+            self.assertEqual(len(data["results"]), 2)
+            self.assertEqual(data["results"][0]["requested_ctx"], 512)
+            self.assertEqual(data["results"][1]["requested_ctx"], 1024)
+            self.assertEqual(data["results"][0]["status"], "DRY_RUN")
+
 
 if __name__ == "__main__":
     unittest.main()
