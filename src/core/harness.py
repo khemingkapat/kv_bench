@@ -224,6 +224,7 @@ def run_benchmark(
                 max_model_len=engine_kwargs.pop("max_model_len", max(2048, ctx + max_tokens + 2048)),
                 trust_remote_code=True,
                 enforce_eager=True,
+                disable_log_stats=False,
                 **engine_kwargs,
             )
 

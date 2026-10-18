@@ -16,8 +16,12 @@ import time
 from typing import Any
 
 from src.core.metrics import calc_percentile
-from src.core.quality import DEFAULT_REFUSAL_TRIGGERS, score_longmemeval_dataset
-from src.core.workload import Workload, WorkloadOutput
+from src.core.quality import (
+    DEFAULT_REFUSAL_TRIGGERS,
+    extract_step_logprobs,
+    score_longmemeval_dataset,
+)
+from src.core.workload import Workload, WorkloadOutput, extract_request_timings
 
 BENCHMARK_DATASET_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data", "longmemeval", "longmemeval_benchmark.json")
@@ -94,7 +98,7 @@ class LongMemEvalWorkload(Workload):
             prompts.append(f"{prefix}{ctx_text}\nUser: {s['question']}\nAssistant:")
 
 
-        sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=5)
 
         start_wall = time.perf_counter()
         outputs = llm.generate(prompts, sampling_params)
@@ -104,7 +108,12 @@ class LongMemEvalWorkload(Workload):
         total_prompt_tok = 0
         total_gen_tok = 0
         ttfts: list[float] = []
+        decodes: list[float] = []
         tpots: list[float] = []
+        all_token_ids: list[int] = []
+        all_step_logprobs: list[dict[int, float]] = []
+
+        total_wall = end_wall - start_wall
 
         for out in outputs:
             gen_text = out.outputs[0].text.strip()
@@ -113,15 +122,15 @@ class LongMemEvalWorkload(Workload):
             gen_len = len(out.outputs[0].token_ids)
             total_gen_tok += gen_len
 
-            metrics = getattr(out, "metrics", None)
-            if metrics and hasattr(metrics, "first_token_time") and hasattr(metrics, "arrival_time"):
-                sample_ttft = metrics.first_token_time - metrics.arrival_time
-                ttfts.append(round(sample_ttft, 4))
-                if hasattr(metrics, "finished_time"):
-                    sample_decode = metrics.finished_time - metrics.first_token_time
-                    decode_tok = gen_len - 1 if gen_len > 1 else gen_len
-                    if sample_decode > 0 and decode_tok > 0:
-                        tpots.append(round(sample_decode / decode_tok * 1000.0, 2))
+            all_token_ids.extend(out.outputs[0].token_ids)
+            all_step_logprobs.extend(extract_step_logprobs(out))
+
+            t, d, _ = extract_request_timings(out, total_wall, gen_len)
+            ttfts.append(round(t, 4))
+            decodes.append(round(d, 4))
+            decode_tok = gen_len - 1 if gen_len > 1 else gen_len
+            if d > 0 and decode_tok > 0:
+                tpots.append(round(d / decode_tok * 1000.0, 2))
 
         # Evaluate quality metrics via unified quality scorer
         eval_summary = score_longmemeval_dataset(self.samples, predictions, refusal_triggers=REFUSAL_TRIGGERS)
@@ -130,31 +139,30 @@ class LongMemEvalWorkload(Workload):
         if self.seed is not None:
             eval_summary["longmem_seed"] = self.seed
 
-
-        total_wall = end_wall - start_wall
         total_samples = len(self.samples)
         mean_ttft = sum(ttfts) / len(ttfts) if ttfts else (total_wall / total_samples if total_samples > 0 else 0.0)
         p95_ttft = calc_percentile(ttfts, 95.0) if ttfts else mean_ttft
-        total_decode_sec = max(0.0, total_wall - mean_ttft)
+        total_decode = max(decodes) if decodes else max(0.0, total_wall - mean_ttft)
+
         decode_tokens = total_gen_tok - total_samples if total_gen_tok > total_samples else total_gen_tok
-        fallback_tpot = (total_decode_sec / decode_tokens * 1000.0) if (decode_tokens > 0 and total_decode_sec > 0) else 0.0
+        fallback_tpot = (total_decode / decode_tokens * 1000.0) if (decode_tokens > 0 and total_decode > 0) else 0.0
         mean_tpot = sum(tpots) / len(tpots) if tpots else fallback_tpot
         p95_tpot = calc_percentile(tpots, 95.0) if tpots else round(mean_tpot, 2)
-
 
         out = WorkloadOutput(
             prompt_tokens=total_prompt_tok,
             generated_tokens=total_gen_tok,
             ttft_sec=round(mean_ttft, 4),
-            decode_time_sec=round(total_wall - mean_ttft, 4),
+            decode_time_sec=round(total_decode, 4),
             total_time_sec=round(total_wall, 4),
             tpot_mean_ms=round(mean_tpot, 2),
             tpot_p95_ms=round(p95_tpot, 2),
             ttft_p95_sec=round(p95_ttft, 4),
             inter_token_latencies_ms=tpots,
             request_ttfts_sec=ttfts,
+            generated_token_ids=all_token_ids,
+            step_logprobs=all_step_logprobs,
+            extra_summary=eval_summary,
         )
-        # Store category accuracies on out for harness extraction
-        out.extra_summary = eval_summary  # type: ignore[attr-defined]
         return out
 

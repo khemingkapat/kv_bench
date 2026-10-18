@@ -321,6 +321,11 @@ class TestWorkloads(unittest.TestCase):
         fake_choice = MagicMock()
         fake_choice.text = "Paris"
         fake_choice.token_ids = [4, 5]
+        fake_lp1 = MagicMock()
+        fake_lp1.logprob = -0.1
+        fake_lp2 = MagicMock()
+        fake_lp2.logprob = -0.2
+        fake_choice.logprobs = [{4: fake_lp1}, {5: fake_lp2}]
         fake_out.outputs = [fake_choice]
         fake_metrics = MagicMock()
         fake_metrics.first_token_time = 0.5
@@ -336,6 +341,8 @@ class TestWorkloads(unittest.TestCase):
             self.assertIn("longmem_acc_overall", result.extra_summary)
             self.assertGreaterEqual(result.tpot_mean_ms, 0.0)
             self.assertGreaterEqual(result.tpot_p95_ms, 0.0)
+            self.assertEqual(len(result.generated_token_ids), len(workload.samples) * 2)
+            self.assertEqual(len(result.step_logprobs), len(workload.samples) * 2)
 
 
 
