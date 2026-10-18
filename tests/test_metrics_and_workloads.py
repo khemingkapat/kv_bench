@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from src.core.metrics import ResultEntry, calc_percentile
@@ -388,7 +389,42 @@ class TestComparison(unittest.TestCase):
         self.assertIn("75.0%", table)
         self.assertIn("0.0050", table)
 
+    def test_consolidate_concurrency_results(self):
+        import json
+        import tempfile
+        from scripts.consolidate_concurrency_results import consolidate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = os.path.join(tmpdir, "concurrent_1users_16gb.json")
+            file2 = os.path.join(tmpdir, "concurrent_4users_16gb.json")
+            out_file = os.path.join(tmpdir, "concurrent_baseline_16gb.json")
+
+            with open(file1, "w") as f:
+                json.dump({
+                    "model": "qwen3-4b",
+                    "technique": "baseline",
+                    "results": [{"requested_ctx": 1024, "status": "SUCCESS", "extra": {"num_users": 1}}],
+                }, f)
+
+            with open(file2, "w") as f:
+                json.dump({
+                    "model": "qwen3-4b",
+                    "technique": "baseline",
+                    "results": [{"requested_ctx": 1024, "status": "SUCCESS", "extra": {"num_users": 4}}],
+                }, f)
+
+            consolidate([os.path.join(tmpdir, "concurrent_*users_16gb.json")], out_file)
+
+            with open(out_file, "r") as f:
+                merged = json.load(f)
+
+            self.assertEqual(merged["model"], "qwen3-4b")
+            self.assertEqual(len(merged["concurrency_grid"]), 2)
+            self.assertEqual(merged["concurrency_grid"][0]["num_users"], 1)
+            self.assertEqual(merged["concurrency_grid"][1]["num_users"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

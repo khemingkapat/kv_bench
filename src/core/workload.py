@@ -248,4 +248,5 @@ class ConcurrentChatWorkload(Workload):
             ttft_p95_sec=round(p95_ttft, 4),
             inter_token_latencies_ms=tpots,
             request_ttfts_sec=ttfts,
+            extra_summary={"num_users": self.num_users},
         )
