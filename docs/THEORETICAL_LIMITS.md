@@ -27,10 +27,10 @@ By modeling the memory allocation equations, paging allocator constraints, and m
 ### A. KV-Cache Memory per Token (GQA in BF16)
 In modern Grouped-Query Attention (GQA) architectures, attention keys and values are stored at native 16-bit precision ($2\text{ bytes}$ per element):
 
-$$\text{KV Bytes per Token} = 2 \text{ (Key \& Value)} \times 2 \text{ bytes (BF16)} \times L_{\text{full\_attn}} \times H_{KV} \times D_{\text{head}} = 4 \cdot L_{\text{full\_attn}} \cdot H_{KV} \cdot D_{\text{head}}$$
+$$\text{KV Bytes per Token} = 2 \text{ (Key + Value)} \times 2 \text{ bytes (BF16)} \times L_{\text{attn}} \times H_{KV} \times D_{\text{head}} = 4 \cdot L_{\text{attn}} \cdot H_{KV} \cdot D_{\text{head}}$$
 
 Where:
-* $L_{\text{full\_attn}}$: Number of full attention layers storing KV states.
+* $L_{\text{attn}}$: Number of full attention layers storing KV states.
 * $H_{KV}$: Number of key/value heads.
 * $D_{\text{head}}$: Head dimension.
 
@@ -65,22 +65,22 @@ $$C_{\text{cliff}}(N) = \left\lfloor \frac{\text{Net Headroom} \times 1024^3}{N 
 ### D. Roofline Memory-Bandwidth Bound (Decode Phase)
 Autoregressive token generation is strictly memory-bandwidth bound at small batch sizes. In each decode step, the GPU memory controller must stream all model weights plus all accumulated KV cache tensors across the memory bus:
 
-$$\text{Bytes Read per Step} = M_{\text{weights\_bytes}} + M_{\text{KV\_bytes}}(C, B)$$
+$$\text{Bytes Read per Step} = M_{\text{weights, bytes}} + M_{\text{KV, bytes}}(C, B)$$
 
 $$\text{Minimum TPOT (ms)} = \frac{\text{Bytes Read per Step}}{\text{Peak Memory Bandwidth (GB/s)} \times 10^6}$$
 
 $$\text{Maximum Decode Throughput (tokens/sec)} = \frac{B}{\text{TPOT} / 1000}$$
 
-$$\text{TPOT Latency Increase (\%)} = \frac{\text{TPOT}(C) - \text{TPOT}(0)}{\text{TPOT}(0)} \times 100\% = \frac{M_{\text{KV\_bytes}}}{M_{\text{weights\_bytes}}} \times 100\%$$
+$$\text{TPOT Latency Increase Ratio} = \frac{\text{TPOT}(C) - \text{TPOT}(0)}{\text{TPOT}(0)} = \frac{M_{\text{KV, bytes}}}{M_{\text{weights, bytes}}}$$
 
-$$\text{Throughput Reduction (\%)} = \frac{\text{Throughput}(0) - \text{Throughput}(C)}{\text{Throughput}(0)} \times 100\%$$
+$$\text{Throughput Reduction Ratio} = \frac{\text{Throughput}(0) - \text{Throughput}(C)}{\text{Throughput}(0)}$$
 
 ### E. Prefill Phase Compute Bound (TTFT)
 Prompt prefill FLOPs incorporate linear matrix projections and causal self-attention (FlashAttention-2 computing the causal lower triangle $C^2/2$):
 
 $$\text{Linear FLOPs} = 2 \cdot P \cdot C$$
 
-$$\text{Causal Attention FLOPs} = 2 \cdot L_{\text{full\_attn}} \cdot (H_Q \cdot D_{\text{head}}) \cdot C^2$$
+$$\text{Causal Attention FLOPs} = 2 \cdot L_{\text{attn}} \cdot (H_Q \cdot D_{\text{head}}) \cdot C^2$$
 
 $$\text{Total Prefill FLOPs} = \text{Linear FLOPs} + \text{Causal Attention FLOPs}$$
 
@@ -91,52 +91,52 @@ $$\text{Minimum TTFT (sec)} = \frac{\text{Total Prefill FLOPs}}{\text{Peak Tenso
 ## 3. Theoretical Analysis: Primary Model (`qwen3-4b`)
 
 Target Checkpoint: `Qwen/Qwen3-4B-Instruct-2507`  
-Hardware: RTX 4090 capped at **$16.0\text{ GiB}$ VRAM** ($1,008\text{ GB/s}$, $82.6\text{ TFLOPS}$)
+Hardware: RTX 4090 capped at **16.0 GiB VRAM** (1,008 GB/s, 82.6 TFLOPS)
 
 * **Architecture:** $L=36$, $H_{KV}=8$, $H_Q=32$, $D_{\text{head}}=128$, Params $\approx 4.03\text{B}$  
 * **KV Bytes per Token:** $4 \times 36 \times 8 \times 128 = 147,456\text{ bytes} = \mathbf{144\text{ KiB/token}}$  
-* **Model Weights:** $8.06\text{ GB}$ decimal = $\mathbf{7.506\text{ GiB}}$ binary  
-* **Runtime Overhead Buffer:** $\mathbf{0.80\text{ GiB}}$  
-* **Net Usable Headroom (Tier 1 Process Cap $16.0\text{ GiB}$):** $16.0 - 7.506 - 0.80 = \mathbf{7.694\text{ GiB}}$  
-* **Net Usable Headroom (Tier 2 vLLM Pool $13.6\text{ GiB}$ at `util=0.85`):** $13.6 - 7.506 - 0.80 = \mathbf{5.294\text{ GiB}}$  
+* **Model Weights:** 8.06 GB decimal = **7.506 GiB** binary  
+* **Runtime Overhead Buffer:** **0.80 GiB**  
+* **Net Usable Headroom (Tier 1 Process Cap 16.0 GiB):** $16.0 - 7.506 - 0.80 = \mathbf{7.694\text{ GiB}}$  
+* **Net Usable Headroom (Tier 2 vLLM Pool 13.6 GiB at `util=0.85`):** $13.6 - 7.506 - 0.80 = \mathbf{5.294\text{ GiB}}$  
 
 ### Theoretical OOM Context Thresholds
 
 | Concurrency ($N$) | vLLM Pool Limit (`util=0.85`) | Process Cap Limit (`util=1.0`) | Failure / Saturation Mode |
 | :---: | :---: | :---: | :--- |
-| **1 user** | **$38,546$ tokens** | $56,022$ tokens | Single-stream fits 32K safely; pool exhausted if $>38.5\text{K}$. |
-| **4 users** | **$9,636$ tokens** | $14,005$ tokens | 4K context fits easily ($4 \times 4096 = 16.3\text{K}$ tokens); 16K triggers OOM. |
-| **8 users** | **$4,818$ tokens** | $7,002$ tokens | 4K context fits near edge; 8K triggers pool exhaustion. |
-| **12 users** | **$3,212$ tokens** | $4,668$ tokens | **Critical inflection:** 2K context fits ($24.5\text{K}$ tokens); 4K context demands $49.1\text{K}$ tokens $\rightarrow$ triggers pool queueing/preemption. |
-| **16 users** | **$2,409$ tokens** | $3,501$ tokens | 2K context fits near edge; 4K context triggers pool exhaustion. |
+| **1 user** | **38,546 tokens** | 56,022 tokens | Single-stream fits 32K safely; pool exhausted if >38.5K. |
+| **4 users** | **9,636 tokens** | 14,005 tokens | 4K context fits easily ($4 \times 4096 = 16.3\text{K}$ tokens); 16K triggers OOM. |
+| **8 users** | **4,818 tokens** | 7,002 tokens | 4K context fits near edge; 8K triggers pool exhaustion. |
+| **12 users** | **3,212 tokens** | 4,668 tokens | **Critical inflection:** 2K context fits (24.5K tokens); 4K context demands 49.1K tokens → triggers pool queueing/preemption. |
+| **16 users** | **2,409 tokens** | 3,501 tokens | 2K context fits near edge; 4K context triggers pool exhaustion. |
 
 ### Single-Stream Context Sweep & Roofline Bounds ($N=1$)
 
 | Context ($C$) | Regime | Total VRAM (GiB) | Pool Headroom | Min TTFT (ms) | Min TPOT (ms) | Peak Tok/s | Latency $\Delta$ | Throughput $\Delta$ | Status |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `512` | Sub-Critical | $8.38$ | $5.22\text{ GiB}$ | $50.9$ | $8.07$ | $123.9$ | $+0.9\%$ | $-0.9\%$ | ✅ Fits |
-| `1,024` | Sub-Critical | $8.45$ | $5.15\text{ GiB}$ | $103.7$ | $8.15$ | $122.8$ | $+1.9\%$ | $-1.8\%$ | ✅ Fits |
-| `2,048` | Sub-Critical | $8.59$ | $5.01\text{ GiB}$ | $214.8$ | $8.30$ | $120.5$ | $+3.8\%$ | $-3.6\%$ | ✅ Fits |
-| `4,096` | Sub-Critical | $8.87$ | $4.73\text{ GiB}$ | $459.6$ | $8.60$ | $116.3$ | $+7.5\%$ | $-7.0\%$ | ✅ Fits |
-| `8,192` | Sub-Critical | $9.43$ | $4.17\text{ GiB}$ | $1039.0$ | $9.19$ | $108.8$ | $+15.0\%$ | $-13.0\%$ | ✅ Fits |
-| `16,384` | Inflection | $10.56$ | $3.04\text{ GiB}$ | $2557.1$ | $10.39$ | $96.2$ | $+30.0\%$ | $-23.1\%$ | ✅ Fits |
-| `32,768` | Cliff Edge | $12.81$ | $0.79\text{ GiB}$ | $7031.1$ | $12.79$ | $78.2$ | $+60.0\%$ | $-37.5\%$ | ⚡ **Near Edge** |
-| `49,152` | Pool Exhaustion | $15.06$ | $-1.46\text{ GiB}$ | $13421.9$ | $15.19$ | $65.8$ | $+89.9\%$ | $-47.4\%$ | ⚠️ **Pool OOM** |
-| `65,536` | Hard Process OOM | $17.31$ | $-3.71\text{ GiB}$ | $21729.5$ | $17.58$ | $56.9$ | $+119.9\%$ | $-54.5\%$ | ❌ **Hard OOM** |
+| `512` | Sub-Critical | 8.38 | 5.22 GiB | 50.9 | 8.07 | 123.9 | +0.9% | -0.9% | ✅ Fits |
+| `1,024` | Sub-Critical | 8.45 | 5.15 GiB | 103.7 | 8.15 | 122.8 | +1.9% | -1.8% | ✅ Fits |
+| `2,048` | Sub-Critical | 8.59 | 5.01 GiB | 214.8 | 8.30 | 120.5 | +3.8% | -3.6% | ✅ Fits |
+| `4,096` | Sub-Critical | 8.87 | 4.73 GiB | 459.6 | 8.60 | 116.3 | +7.5% | -7.0% | ✅ Fits |
+| `8,192` | Sub-Critical | 9.43 | 4.17 GiB | 1039.0 | 9.19 | 108.8 | +15.0% | -13.0% | ✅ Fits |
+| `16,384` | Inflection | 10.56 | 3.04 GiB | 2557.1 | 10.39 | 96.2 | +30.0% | -23.1% | ✅ Fits |
+| `32,768` | Cliff Edge | 12.81 | 0.79 GiB | 7031.1 | 12.79 | 78.2 | +60.0% | -37.5% | ⚡ **Near Edge** |
+| `49,152` | Pool Exhaustion | 15.06 | -1.46 GiB | 13421.9 | 15.19 | 65.8 | +89.9% | -47.4% | ⚠️ **Pool OOM** |
+| `65,536` | Hard Process OOM | 17.31 | -3.71 GiB | 21729.5 | 17.58 | 56.9 | +119.9% | -54.5% | ❌ **Hard OOM** |
 
 ---
 
 ## 4. Multi-User Concurrency Grid ($N \times C$)
 
-Total memory footprint against the **$13.60\text{ GiB}$ vLLM Pool** (`util=0.85`):
+Total memory footprint against the **13.60 GiB vLLM Pool** (`util=0.85`):
 
 | Concurrent Users ($N$) | $C=1,024$ | $C=2,048$ | $C=4,096$ | $C=8,192$ |
 | :---: | :---: | :---: | :---: | :---: |
-| **$N = 1$** | ✅ $8.4\text{ GiB}$ | ✅ $8.6\text{ GiB}$ | ✅ $8.9\text{ GiB}$ | ✅ $9.4\text{ GiB}$ |
-| **$N = 4$** | ✅ $8.9\text{ GiB}$ | ✅ $9.4\text{ GiB}$ | ✅ $10.6\text{ GiB}$ | ⚡ **$12.8\text{ GiB}$ (Edge)** |
-| **$N = 8$** | ✅ $9.4\text{ GiB}$ | ✅ $10.6\text{ GiB}$ | ⚡ **$12.8\text{ GiB}$ (Edge)** | ❌ **$17.3\text{ GiB}$ (Hard OOM)** |
-| **$N = 12$** | ✅ $10.0\text{ GiB}$ | ✅ $11.7\text{ GiB}$ | ⚠️ **$15.1\text{ GiB}$ (Pool OOM)** | ❌ **$21.8\text{ GiB}$ (Hard OOM)** |
-| **$N = 16$** | ✅ $10.6\text{ GiB}$ | ⚡ **$12.8\text{ GiB}$ (Edge)** | ❌ **$17.3\text{ GiB}$ (Hard OOM)** | ❌ **$26.3\text{ GiB}$ (Hard OOM)** |
+| **$N = 1$** | ✅ 8.4 GiB | ✅ 8.6 GiB | ✅ 8.9 GiB | ✅ 9.4 GiB |
+| **$N = 4$** | ✅ 8.9 GiB | ✅ 9.4 GiB | ✅ 10.6 GiB | ⚡ **12.8 GiB (Edge)** |
+| **$N = 8$** | ✅ 9.4 GiB | ✅ 10.6 GiB | ⚡ **12.8 GiB (Edge)** | ❌ **17.3 GiB (Hard OOM)** |
+| **$N = 12$** | ✅ 10.0 GiB | ✅ 11.7 GiB | ⚠️ **15.1 GiB (Pool OOM)** | ❌ **21.8 GiB (Hard OOM)** |
+| **$N = 16$** | ✅ 10.6 GiB | ⚡ **12.8 GiB (Edge)** | ❌ **17.3 GiB (Hard OOM)** | ❌ **26.3 GiB (Hard OOM)** |
 
 ---
 
@@ -144,10 +144,10 @@ Total memory footprint against the **$13.60\text{ GiB}$ vLLM Pool** (`util=0.85`
 
 | Model | Hardware Budget | Weights (Binary) | KV Bytes/Token | Pool Headroom (`0.85`) | Single-User Pool Cliff | 12-User Pool Cliff |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`qwen3-4b`** | 16 GiB | $7.506\text{ GiB}$ | $144\text{ KiB}$ | $5.294\text{ GiB}$ | $38,546$ tokens | $3,212$ tokens |
-| **`phi4-mini`** | 16 GiB | $7.125\text{ GiB}$ | $128\text{ KiB}$ | $5.675\text{ GiB}$ | $46,492$ tokens | $3,874$ tokens |
-| **`qwen3-1.7b`** | 8 GiB | $3.213\text{ GiB}$ | $112\text{ KiB}$ | $2.987\text{ GiB}$ | $27,964$ tokens | $2,330$ tokens |
-| **`qwen3.5-4b` (Hybrid)** | 16 GiB | $7.544\text{ GiB}$ | $32\text{ KiB}$ (+GDN) | $5.256\text{ GiB}$ | $172,238$ tokens | $14,353$ tokens |
+| **`qwen3-4b`** | 16 GiB | 7.506 GiB | 144 KiB | 5.294 GiB | 38,546 tokens | 3,212 tokens |
+| **`phi4-mini`** | 16 GiB | 7.125 GiB | 128 KiB | 5.675 GiB | 46,492 tokens | 3,874 tokens |
+| **`qwen3-1.7b`** | 8 GiB | 3.213 GiB | 112 KiB | 2.987 GiB | 27,964 tokens | 2,330 tokens |
+| **`qwen3.5-4b` (Hybrid)** | 16 GiB | 7.544 GiB | 32 KiB (+GDN) | 5.256 GiB | 172,238 tokens | 14,353 tokens |
 
 ---
 
@@ -159,10 +159,10 @@ To ensure rigorous validation of both scaling performance and failure boundaries
 * **Context Array:** `512, 1024, 2048, 4096, 8192, 16384, 32768, 49152, 65536`
 * **Test Categorization:**
   * **Sub-Critical (`512` to `8192`):** Validates raw throughput, baseline TTFT scaling, and verifies linear memory growth without paging pressure.
-  * **Inflection (`16384`):** Verifies memory bandwidth degradation (predicted $-23.1\%$ throughput reduction / $+30.0\%$ TPOT latency).
-  * **Cliff-Edge (`32768`):** Tests allocator behavior at $>90\%$ vLLM pool utilization (predicted $-37.5\%$ throughput reduction).
-  * **Pool Exhaustion (`49152`):** Verifies vLLM pool exhaustion behavior ($15.06\text{ GiB} > 13.60\text{ GiB}$ pool).
-  * **Over-the-Cliff (`65536`):** Verifies graceful out-of-memory handling and vLLM abort behavior under process cap ($17.31\text{ GiB} > 16.0\text{ GiB}$).
+  * **Inflection (`16384`):** Verifies memory bandwidth degradation (predicted -23.1% throughput reduction / +30.0% TPOT latency).
+  * **Cliff-Edge (`32768`):** Tests allocator behavior at >90% vLLM pool utilization (predicted -37.5% throughput reduction).
+  * **Pool Exhaustion (`49152`):** Verifies vLLM pool exhaustion behavior (15.06 GiB > 13.60 GiB pool).
+  * **Over-the-Cliff (`65536`):** Verifies graceful out-of-memory handling and vLLM abort behavior under process cap (17.31 GiB > 16.0 GiB).
 
 ### Stream B: Multi-User Concurrency Sweep
 * **User Array:** `1, 4, 8, 12, 16` concurrent sessions.
