@@ -177,7 +177,7 @@ Examples:
   uv run main.py --technique lmcache --contexts 2048 --profile
 """,
     )
-    parser.add_argument("--technique", required=True, help=f"one of: {', '.join(available)}")
+    parser.add_argument("--technique", default=None, help=f"one of: {', '.join(available)}")
     parser.add_argument("--model", default=defaults.model)
     parser.add_argument("--contexts", nargs="+", default=defaults.contexts)
     parser.add_argument("--max-tokens", type=int, default=defaults.max_tokens)
@@ -274,7 +274,33 @@ Examples:
         action="store_true",
         help="Force subprocess isolation even during dry-run (useful for verifying subprocess mechanics)",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate Phase 2 Baseline Profiling Report and visualization figures from results directory",
+    )
     args = parser.parse_args()
+
+    if args.report:
+        from src.analysis.report_generator import (
+            load_baseline_results,
+            reconcile_hardware_gaps,
+            generate_publication_figures,
+            generate_baseline_markdown_report,
+        )
+        print("[Report] Loading baseline results...")
+        data = load_baseline_results()
+        reconciled_hw = reconcile_hardware_gaps(
+            data["hardware"]["results"],
+            data["concurrent"].get("concurrency_grid"),
+        )
+        generate_publication_figures(data)
+        generate_baseline_markdown_report(data, reconciled_hw)
+        print("[Report] Phase 2 Baseline Profiling Report and figures successfully generated.")
+        sys.exit(0)
+
+    if not args.technique:
+        parser.error("the following arguments are required: --technique (unless --report is specified)")
 
     technique_kwargs = parse_technique_args(args.technique_args)
     technique_cls_instance = get_technique(args.technique, **technique_kwargs)
