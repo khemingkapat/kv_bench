@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0",
-  "generated_at": "2026-10-18T04:37:19.720265+00:00",
+  "generated_at": "2026-10-25T02:50:41.986611+00:00",
   "is_dry_run": false,
   "datasets": {
     "longmemeval": {
@@ -25,7 +25,48 @@
       "name": "PG-19",
       "role": "Low-Level Continuous Long-Context Stream (up to 32K tokens)",
       "upstream": "https://storage.googleapis.com/deepmind-gutenberg/test",
-      "files": []
+      "files": [
+        {
+          "path": "data/pg19/book_10146.txt",
+          "book_id": "10146",
+          "sha256": "f8dd4334fd8d422cd2f9153ffbff9b097611569592d7ca09fc6fe7881336d331",
+          "size_bytes": 253872,
+          "word_count": 43024,
+          "approx_tokens": 55931
+        },
+        {
+          "path": "data/pg19/book_10321.txt",
+          "book_id": "10321",
+          "sha256": "fedcb2723c2ad091f76d45eb98efd810977e7b906f6fd8cbd815734d1e90c456",
+          "size_bytes": 324979,
+          "word_count": 53847,
+          "approx_tokens": 70001
+        },
+        {
+          "path": "data/pg19/book_10356.txt",
+          "book_id": "10356",
+          "sha256": "af4b57d358448588adbc6da962cad655bf586ae746dba21f62e956d36d97c88e",
+          "size_bytes": 314879,
+          "word_count": 52035,
+          "approx_tokens": 67645
+        },
+        {
+          "path": "data/pg19/book_10762.txt",
+          "book_id": "10762",
+          "sha256": "fcc71b161311d4854a078f8cdda6e4381542536167145f6dfdda84bcad256d5f",
+          "size_bytes": 348606,
+          "word_count": 58360,
+          "approx_tokens": 75868
+        },
+        {
+          "path": "data/pg19/book_12204.txt",
+          "book_id": "12204",
+          "sha256": "e1c79655be744bc89fd291f84b77ddb1819d117f2bba142373f94d5ab309d0d0",
+          "size_bytes": 24408,
+          "word_count": 4543,
+          "approx_tokens": 5905
+        }
+      ]
     }
   }
 }
