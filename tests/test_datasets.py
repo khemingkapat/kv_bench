@@ -151,6 +151,62 @@ class TestDatasetStagingAndManifest(unittest.TestCase):
         fallback_prefix = load_continuous_prefix(context_length=50, pg19_dir="/non/existent/path")
         self.assertTrue("The quick brown fox" in fallback_prefix)
 
+    def test_load_continuous_prefix_multibook_concatenation(self):
+        pg19_dir = os.path.join(self.data_dir, "pg19_multi")
+        os.makedirs(pg19_dir, exist_ok=True)
+        # Create 2 books with 20 words each
+        b1_words = [f"wordA{i}" for i in range(20)]
+        b2_words = [f"wordB{i}" for i in range(20)]
+        with open(os.path.join(pg19_dir, "book_1.txt"), "w") as f:
+            f.write(" ".join(b1_words))
+        with open(os.path.join(pg19_dir, "book_2.txt"), "w") as f:
+            f.write(" ".join(b2_words))
+
+        # Request 40 tokens -> requires concatenating both books
+        prefix = load_continuous_prefix(context_length=40, pg19_dir=pg19_dir)
+        self.assertIn("wordA0", prefix)
+        self.assertIn("wordB0", prefix)
+
+    def test_load_continuous_prefix_with_tokenizer(self):
+        pg19_dir = os.path.join(self.data_dir, "pg19_tok")
+        os.makedirs(pg19_dir, exist_ok=True)
+        sample_words = [f"token{i}" for i in range(100)]
+        with open(os.path.join(pg19_dir, "book_1.txt"), "w") as f:
+            f.write(" ".join(sample_words))
+
+        class MockTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                return [hash(w) % 1000 for w in text.split()]
+
+            def decode(self, token_ids):
+                return " ".join([f"id_{tid}" for tid in token_ids])
+
+        mock_tok = MockTokenizer()
+        prefix = load_continuous_prefix(context_length=15, pg19_dir=pg19_dir, tokenizer=mock_tok)
+        self.assertEqual(len(prefix.split()), 15)
+        self.assertTrue(prefix.startswith("id_"))
+
+    def test_write_manifest_preserves_sibling(self):
+        manifest_file = os.path.join(self.temp_dir.name, "manifest_preserve.json")
+        # 1. Write longmemeval only
+        lm_entry = {"path": "data/sample.json", "sha256": "1234"}
+        write_manifest(manifest_file, longmemeval_entry=lm_entry, pg19_entries=[])
+
+        with open(manifest_file) as f:
+            data1 = json.load(f)
+        self.assertEqual(data1["datasets"]["longmemeval"]["file"]["sha256"], "1234")
+        self.assertEqual(data1["datasets"]["pg19"]["files"], [])
+
+        # 2. Update with pg19 only -> should preserve longmemeval
+        pg_entries = [{"path": "data/pg19/book_1.txt", "sha256": "abcd"}]
+        write_manifest(manifest_file, longmemeval_entry={}, pg19_entries=pg_entries)
+
+        with open(manifest_file) as f:
+            data2 = json.load(f)
+        self.assertEqual(data2["datasets"]["longmemeval"]["file"]["sha256"], "1234")
+        self.assertEqual(len(data2["datasets"]["pg19"]["files"]), 1)
+        self.assertEqual(data2["datasets"]["pg19"]["files"][0]["sha256"], "abcd")
+
 
 if __name__ == "__main__":
     unittest.main()

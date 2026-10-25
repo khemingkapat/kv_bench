@@ -80,9 +80,10 @@ class LongMemEvalWorkload(Workload):
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
 
-        from src.core.workload import _make_prompt
+        from src.core.workload import _get_tokenizer, load_continuous_prefix
 
         target_words = max(30, int(context_length * 0.6))
+        tok = _get_tokenizer(llm)
 
         prompts = []
         for s in self.samples:
@@ -93,7 +94,12 @@ class LongMemEvalWorkload(Workload):
             else:
                 ctx_text = s.get("context", "")
                 remaining = target_words - len(words)
-                prefix = (_make_prompt(remaining) + "\n\n[Chat History Continued]\n") if remaining > 20 else ""
+                # Pad with natural PG-19 background passage instead of synthetic repeated sentence
+                needed_tokens = max(10, int(remaining * 1.45))
+                prefix = (
+                    load_continuous_prefix(needed_tokens, tokenizer=tok)
+                    + "\n\n[Chat History Continued]\n"
+                ) if remaining > 20 else ""
 
             prompts.append(f"{prefix}{ctx_text}\nUser: {s['question']}\nAssistant:")
 

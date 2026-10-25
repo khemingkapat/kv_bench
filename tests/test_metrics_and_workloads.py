@@ -344,6 +344,49 @@ class TestWorkloads(unittest.TestCase):
             self.assertEqual(len(result.generated_token_ids), len(workload.samples) * 2)
             self.assertEqual(len(result.step_logprobs), len(workload.samples) * 2)
 
+    def test_workloads_use_continuous_prefix(self):
+        from unittest.mock import MagicMock
+        from src.core.workload import ColdWarm, ConcurrentChatWorkload, SyntheticFiller
+
+        mock_llm = MagicMock()
+        fake_out = MagicMock()
+        fake_out.prompt_token_ids = [1, 2, 3]
+        fake_choice = MagicMock()
+        fake_choice.text = "Output"
+        fake_choice.token_ids = [4, 5]
+        fake_choice.logprobs = []
+        fake_out.outputs = [fake_choice]
+        fake_metrics = MagicMock()
+        fake_metrics.first_token_time = 0.5
+        fake_metrics.arrival_time = 0.0
+        fake_metrics.finished_time = 1.0
+        fake_out.metrics = fake_metrics
+
+        # 1. SyntheticFiller
+        mock_llm.generate.return_value = [fake_out]
+        w_synth = SyntheticFiller()
+        w_synth.run(mock_llm, context_length=128, max_tokens=16)
+        call_args = mock_llm.generate.call_args[0][0]
+        self.assertNotIn("The quick brown fox", call_args[0])
+
+        # 2. ColdWarm
+        mock_llm.generate.return_value = [fake_out]
+        w_cw = ColdWarm()
+        w_cw.run(mock_llm, context_length=128, max_tokens=16)
+        cw_calls = mock_llm.generate.call_args_list
+        for c in cw_calls[-2:]:
+            prompt_str = c[0][0][0]
+            self.assertNotIn("The quick brown fox", prompt_str)
+
+        # 3. ConcurrentChatWorkload
+        w_conc = ConcurrentChatWorkload(num_users=2)
+        mock_llm.generate.return_value = [fake_out, fake_out]
+        w_conc.run(mock_llm, context_length=128, max_tokens=16)
+        conc_call = mock_llm.generate.call_args[0][0]
+        self.assertEqual(len(conc_call), 2)
+        for p in conc_call:
+            self.assertNotIn("The quick brown fox", p)
+
 
 
 class TestComparison(unittest.TestCase):

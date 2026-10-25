@@ -271,6 +271,7 @@ def stage_pg19(
     output_dir: str,
     book_ids: list[str],
     dry_run: bool = False,
+    force_download: bool = False,
 ) -> list[dict[str, Any]]:
     """Download and stage curated continuous long-text books from PG-19."""
     os.makedirs(output_dir, exist_ok=True)
@@ -295,12 +296,17 @@ def stage_pg19(
             })
     else:
         for b_id in book_ids:
-            url = f"{PG19_BASE_URL}/{b_id}.txt"
             book_path = os.path.join(output_dir, f"book_{b_id}.txt")
-            print(f"Downloading PG-19 book {b_id} from {url}...")
-            text_bytes = fetch_url_bytes(url)
-            with open(book_path, "wb") as f:
-                f.write(text_bytes)
+            if os.path.exists(book_path) and not force_download:
+                print(f"Reusing existing staged PG-19 book {b_id} at {book_path}...")
+                with open(book_path, "rb") as f:
+                    text_bytes = f.read()
+            else:
+                url = f"{PG19_BASE_URL}/{b_id}.txt"
+                print(f"Downloading PG-19 book {b_id} from {url}...")
+                text_bytes = fetch_url_bytes(url)
+                with open(book_path, "wb") as f:
+                    f.write(text_bytes)
 
             text = text_bytes.decode("utf-8", errors="ignore")
             words = len(text.split())
@@ -325,8 +331,27 @@ def write_manifest(
     pg19_entries: list[dict[str, Any]],
     is_mock: bool = False,
 ) -> None:
-    """Write the dataset provenance manifest."""
+    """Write the dataset provenance manifest, preserving existing entries on partial updates."""
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    existing_longmemeval = {}
+    existing_pg19 = []
+
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+            existing_longmemeval = (
+                existing_data.get("datasets", {}).get("longmemeval", {}).get("file", {})
+            )
+            existing_pg19 = (
+                existing_data.get("datasets", {}).get("pg19", {}).get("files", [])
+            )
+        except Exception:
+            pass
+
+    final_longmemeval = longmemeval_entry if longmemeval_entry else existing_longmemeval
+    final_pg19 = pg19_entries if pg19_entries else existing_pg19
+
     manifest = {
         "manifest_version": "1.0",
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -336,13 +361,13 @@ def write_manifest(
                 "name": "LongMemEval",
                 "role": "High-Level Long-Term Memory Adherence (5 capabilities)",
                 "upstream": LONGMEMEVAL_ORACLE_URL,
-                "file": longmemeval_entry,
+                "file": final_longmemeval,
             },
             "pg19": {
                 "name": "PG-19",
                 "role": "Low-Level Continuous Long-Context Stream (up to 32K tokens)",
                 "upstream": PG19_BASE_URL,
-                "files": pg19_entries,
+                "files": final_pg19,
             },
         },
     }

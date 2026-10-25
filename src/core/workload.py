@@ -56,24 +56,61 @@ class Workload(ABC):
         raise NotImplementedError
 
 
+def _get_tokenizer(llm: Any) -> Any:
+    """Safely obtain tokenizer from LLM instance if present and valid."""
+    if hasattr(llm, "get_tokenizer") and callable(getattr(llm, "get_tokenizer")):
+        try:
+            tok = llm.get_tokenizer()
+            if hasattr(tok, "encode") and hasattr(tok, "decode"):
+                return tok
+        except Exception:
+            pass
+    return None
+
+
 def _make_prompt(context_length: int) -> str:
     return FILLER_SENTENCE * max(1, context_length // 10)
 
 
-def load_continuous_prefix(context_length: int, pg19_dir: str | None = None) -> str:
+def load_continuous_prefix(
+    context_length: int,
+    pg19_dir: str | None = None,
+    tokenizer: Any | None = None,
+) -> str:
     """Load a continuous natural text passage from staged PG-19 books,
-    falling back to synthetic filler if unavailable."""
+    falling back to synthetic filler if unavailable.
+
+    When tokenizer is available, encodes candidate text and slices to exact
+    target tokens. When tokenizer is None, slices to target words calibrated
+    for BPE tokenizers (~1.45 tokens/word on 19th-century text).
+    """
     if pg19_dir is None:
         pg19_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "pg19"))
     if os.path.isdir(pg19_dir):
         files = sorted([os.path.join(pg19_dir, f) for f in os.listdir(pg19_dir) if f.endswith(".txt")])
         if files:
-            with open(files[0], "r", encoding="utf-8", errors="ignore") as f:
-                words = f.read().split()
-                target_words = max(10, int(context_length / 1.3))
-                if len(words) >= target_words:
-                    return " ".join(words[:target_words])
-                return " ".join(words)
+            # Need enough words to cover context_length across multiple files
+            target_words = max(10, int(context_length / 1.45) + 32)
+            accumulated_words: list[str] = []
+            for filepath in files:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    accumulated_words.extend(f.read().split())
+                if len(accumulated_words) >= target_words:
+                    break
+
+            if accumulated_words:
+                raw_text = " ".join(accumulated_words)
+                if tokenizer is not None and hasattr(tokenizer, "encode") and hasattr(tokenizer, "decode"):
+                    try:
+                        tokens = tokenizer.encode(raw_text, add_special_tokens=False)
+                        if len(tokens) >= context_length:
+                            return tokenizer.decode(tokens[:context_length])
+                        return tokenizer.decode(tokens)
+                    except Exception:
+                        pass
+                # Fallback word-slice if tokenizer is None or failed
+                calibrated_words = max(10, int(context_length / 1.45))
+                return " ".join(accumulated_words[:calibrated_words])
     return _make_prompt(context_length)
 
 
@@ -171,7 +208,9 @@ class SyntheticFiller(Workload):
     """
 
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
-        return _timed_generate(llm, _make_prompt(context_length), max_tokens)
+        tok = _get_tokenizer(llm)
+        prompt = load_continuous_prefix(context_length, tokenizer=tok)
+        return _timed_generate(llm, prompt, max_tokens)
 
 
 class ColdWarm(Workload):
@@ -190,7 +229,8 @@ class ColdWarm(Workload):
     """
 
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
-        prefix = _make_prompt(context_length)
+        tok = _get_tokenizer(llm)
+        prefix = load_continuous_prefix(context_length, tokenizer=tok)
         cold_prompt = prefix + "\n\nInstruction: Summarize."
         warm_prompt = prefix + "\n\nInstruction: What is the theme?"
 
@@ -219,7 +259,8 @@ class ConcurrentChatWorkload(Workload):
     def run(self, llm, context_length: int, max_tokens: int) -> WorkloadOutput:
         from vllm import SamplingParams
 
-        prefix = _make_prompt(context_length)
+        tok = _get_tokenizer(llm)
+        prefix = load_continuous_prefix(context_length, tokenizer=tok)
         queries = [
             f"User {i+1} inquiry: Answer query {i+1} concerning the document."
             for i in range(self.num_users)
