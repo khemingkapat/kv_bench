@@ -55,7 +55,7 @@ class LongMemEvalWorkload(Workload):
 
     def __init__(
         self,
-        dataset_path: str = DEFAULT_DATASET_PATH,
+        dataset_path: str | None = None,
         samples_per_task: int | None = None,
         max_samples: int | None = None,
         seed: int | None = None,
@@ -65,6 +65,10 @@ class LongMemEvalWorkload(Workload):
     ):
         import random
 
+        if dataset_path is None:
+            dataset_path = (
+                BENCHMARK_DATASET_PATH if os.path.exists(BENCHMARK_DATASET_PATH) else FALLBACK_DATASET_PATH
+            )
         self.dataset_path = dataset_path
         self.samples_per_task = samples_per_task
         self.max_samples = max_samples
@@ -90,8 +94,22 @@ class LongMemEvalWorkload(Workload):
         # Filter by static length_tier if explicitly specified and not auto
         if self.length_tier and self.length_tier not in ("auto", "all"):
             filtered_samples = [s for s in all_samples if s.get("length_tier") == self.length_tier]
+            if not filtered_samples:
+                raise ValueError(
+                    f"Requested length_tier='{self.length_tier}', but dataset '{self.dataset_path}' has 0 matching samples. "
+                    "Run 'uv run python scripts/download_datasets.py' to stage the full benchmark dataset."
+                )
         else:
             filtered_samples = all_samples
+
+        if self.select_by_length:
+            has_long_samples = any(s.get("approx_tokens", 0) >= 7000 for s in all_samples)
+            if not has_long_samples:
+                raise ValueError(
+                    f"select_by_length=True requires multi-tier benchmark samples (up to 16k context, >= 7000 tokens), "
+                    f"but dataset '{self.dataset_path}' only contains short samples. "
+                    "Run 'uv run python scripts/download_datasets.py' to stage the full benchmark dataset."
+                )
 
         effective_per_task = samples_per_task
         if effective_per_task is None and max_samples is not None and max_samples > 0:
@@ -133,7 +151,10 @@ class LongMemEvalWorkload(Workload):
             candidates = [s for s in self.all_samples if s.get("approx_tokens", 0) >= 7000]
 
         if not candidates:
-            candidates = self.all_samples
+            raise ValueError(
+                f"No matching samples found for context_length={context_length} in '{self.dataset_path}'. "
+                "Ensure the benchmark dataset is staged via 'uv run python scripts/download_datasets.py'."
+            )
 
         effective_per_task = self.samples_per_task
         if effective_per_task is None and self.max_samples is not None and self.max_samples > 0:

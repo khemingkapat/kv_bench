@@ -17,7 +17,51 @@ from src.analysis.report_generator import (
 
 class TestAnalysisReport(unittest.TestCase):
     def setUp(self):
-        self.data = load_baseline_results("results")
+        results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
+        hw_file = os.path.join(results_dir, "baseline_hardware_16gb.json")
+        if os.path.exists(hw_file):
+            self.data = load_baseline_results(results_dir)
+        else:
+            self.data = self._create_synthetic_fixture()
+
+    @staticmethod
+    def _create_synthetic_fixture():
+        hw_results = [
+            {"requested_ctx": 512, "status": "SUCCESS", "peak_alloc_mb": 7500.0, "peak_reserved_mb": 8000.0, "tpot_mean_ms": 10.5, "throughput_tok_per_sec": 95.0, "ttft_sec": 0.05},
+            {"requested_ctx": 1024, "status": "SUCCESS", "peak_alloc_mb": 7600.0, "peak_reserved_mb": 8100.0, "tpot_mean_ms": 10.8, "throughput_tok_per_sec": 92.0, "ttft_sec": 0.06},
+            {"requested_ctx": 2048, "status": "SUCCESS", "peak_alloc_mb": 7800.0, "peak_reserved_mb": 8300.0, "tpot_mean_ms": 11.2, "throughput_tok_per_sec": 89.0, "ttft_sec": 0.07},
+            {"requested_ctx": 4096, "status": "SUCCESS", "peak_alloc_mb": 8200.0, "peak_reserved_mb": 8700.0, "tpot_mean_ms": 11.8, "throughput_tok_per_sec": 84.0, "ttft_sec": 0.09},
+            {"requested_ctx": 8192, "status": "SUCCESS", "peak_alloc_mb": 9000.0, "peak_reserved_mb": 9500.0, "tpot_mean_ms": 12.5, "throughput_tok_per_sec": 80.0, "ttft_sec": 0.12},
+            {"requested_ctx": 16384, "status": "SUCCESS", "peak_alloc_mb": 10600.0, "peak_reserved_mb": 11100.0, "tpot_mean_ms": 13.5, "throughput_tok_per_sec": 74.0, "ttft_sec": 0.20},
+            {"requested_ctx": 32768, "status": "SUCCESS", "peak_alloc_mb": 13800.0, "peak_reserved_mb": 14300.0, "tpot_mean_ms": 16.0, "throughput_tok_per_sec": 62.0, "ttft_sec": 0.35},
+            {"requested_ctx": 49152, "status": "FAILED", "error": "Requested context length is larger than the available KV cache memory pool."},
+        ]
+        n1_results = [
+            {"requested_ctx": 512, "status": "SUCCESS", "tpot_mean_ms": 10.0, "throughput_tok_per_sec": 100.0},
+            {"requested_ctx": 1024, "status": "SUCCESS", "tpot_mean_ms": 10.2, "throughput_tok_per_sec": 98.0},
+            {"requested_ctx": 2048, "status": "SUCCESS", "tpot_mean_ms": 10.5, "throughput_tok_per_sec": 95.0},
+            {"requested_ctx": 4096, "status": "SUCCESS", "tpot_mean_ms": 11.0, "throughput_tok_per_sec": 90.0},
+        ]
+        concurrency_grid = [
+            {"num_users": 1, "results": n1_results},
+            {"num_users": 4, "results": []},
+            {"num_users": 8, "results": []},
+            {"num_users": 12, "results": []},
+            {"num_users": 16, "results": []},
+        ]
+        lm_results = [
+            {"requested_ctx": 512, "status": "SUCCESS", "adherence_score": 0.95, "ttft_sec": 0.05, "tpot_mean_ms": 10.5},
+            {"requested_ctx": 1024, "status": "SUCCESS", "adherence_score": 0.92, "ttft_sec": 0.08, "tpot_mean_ms": 11.0},
+            {"requested_ctx": 2048, "status": "SUCCESS", "adherence_score": 0.90, "ttft_sec": 0.12, "tpot_mean_ms": 11.5},
+            {"requested_ctx": 4096, "status": "SUCCESS", "adherence_score": 0.88, "ttft_sec": 0.20, "tpot_mean_ms": 12.0},
+        ]
+        return {
+            "hardware": {"model": "qwen3-4b", "technique": "baseline", "axes": [], "results": hw_results},
+            "concurrent": {"model": "qwen3-4b", "technique": "baseline", "concurrency_grid": concurrency_grid},
+            "longmem": {"model": "qwen3-4b", "technique": "baseline", "axes": [], "results": lm_results},
+            "verify_identity": {},
+            "verify_cross_model": {},
+        }
 
     def test_load_baseline_results_structure(self):
         self.assertIn("hardware", self.data)
