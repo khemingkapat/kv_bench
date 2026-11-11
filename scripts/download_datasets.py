@@ -28,10 +28,20 @@ DEFAULT_PG19_TEST_BOOKS = [
     "12204",  # A Little Tour in France
 ]
 
+LONGMEMEVAL_COMMIT_SHA = "98d7416c24c778c2fee6e6f3006e7a073259d48f"
 PG19_BASE_URL = "https://storage.googleapis.com/deepmind-gutenberg/test"
 LONGMEMEVAL_ORACLE_URL = (
-    "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json"
+    f"https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/{LONGMEMEVAL_COMMIT_SHA}/longmemeval_oracle.json"
 )
+
+EXPECTED_LONGMEMEVAL_SHA256 = "86af3d2e66fa25343b6992634b57821fd1dd2b88283aa623da3de89656e2f37c"
+EXPECTED_PG19_SHA256 = {
+    "10146": "f8dd4334fd8d422cd2f9153ffbff9b097611569592d7ca09fc6fe7881336d331",
+    "10321": "fedcb2723c2ad091f76d45eb98efd810977e7b906f6fd8cbd815734d1e90c456",
+    "10356": "af4b57d358448588adbc6da962cad655bf586ae746dba21f62e956d36d97c88e",
+    "10762": "fcc71b161311d4854a078f8cdda6e4381542536167145f6dfdda84bcad256d5f",
+    "12204": "e1c79655be744bc89fd291f84b77ddb1819d117f2bba142373f94d5ab309d0d0",
+}
 
 # Mapping upstream LongMemEval question_type to our 5 benchmark capabilities
 # Exclude single-session-preference as it contains open-ended subjective rubrics
@@ -190,6 +200,7 @@ def stage_longmemeval(
     output_path: str,
     target_samples_per_task: int = 10,
     dry_run: bool = False,
+    force_download: bool = False,
 ) -> dict[str, Any]:
     """Download, preprocess, and stage LongMemEval dataset."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -198,6 +209,25 @@ def stage_longmemeval(
         print("[Dry-Run] Generating mock LongMemEval dataset...")
         records = generate_mock_longmemeval(samples_per_task=2)
     else:
+        if os.path.exists(output_path) and not force_download:
+            existing_sha256 = compute_sha256(output_path)
+            if existing_sha256 == EXPECTED_LONGMEMEVAL_SHA256:
+                print(f"Reusing existing validated LongMemEval dataset at {output_path}...")
+                with open(output_path, "r", encoding="utf-8") as f:
+                    records = json.load(f)
+                task_counts: dict[str, int] = {}
+                for r in records:
+                    task_counts[r["task_type"]] = task_counts.get(r["task_type"], 0) + 1
+                return {
+                    "path": os.path.relpath(output_path),
+                    "sha256": existing_sha256,
+                    "size_bytes": os.path.getsize(output_path),
+                    "sample_count": len(records),
+                    "task_distribution": task_counts,
+                }
+            else:
+                print(f"Existing LongMemEval hash mismatch ({existing_sha256} != {EXPECTED_LONGMEMEVAL_SHA256}), refetching...")
+
         print(f"Downloading LongMemEval oracle dataset from {LONGMEMEVAL_ORACLE_URL}...")
         raw_bytes = fetch_url_bytes(LONGMEMEVAL_ORACLE_URL)
         raw_items = json.loads(raw_bytes.decode("utf-8"))
@@ -283,6 +313,11 @@ def stage_longmemeval(
 
     sha256 = compute_sha256(output_path)
     file_size = os.path.getsize(output_path)
+    if not dry_run and target_samples_per_task == 10:
+        if sha256 != EXPECTED_LONGMEMEVAL_SHA256:
+            raise ValueError(
+                f"LongMemEval SHA-256 mismatch: got {sha256}, expected {EXPECTED_LONGMEMEVAL_SHA256}"
+            )
 
     return {
         "path": os.path.relpath(output_path),
@@ -339,10 +374,16 @@ def stage_pg19(
             approx_tokens = int(words * 1.3)
             print(f"  Staged book {b_id}: {words:,} words (~{approx_tokens:,} tokens, {len(text_bytes):,} bytes)")
 
+            book_sha = compute_sha256(book_path)
+            if not dry_run and b_id in EXPECTED_PG19_SHA256:
+                expected_sha = EXPECTED_PG19_SHA256[b_id]
+                if book_sha != expected_sha:
+                    raise ValueError(f"PG-19 book {b_id} SHA-256 mismatch: got {book_sha}, expected {expected_sha}")
+
             manifest_entries.append({
                 "path": os.path.relpath(book_path),
                 "book_id": b_id,
-                "sha256": compute_sha256(book_path),
+                "sha256": book_sha,
                 "size_bytes": len(text_bytes),
                 "word_count": words,
                 "approx_tokens": approx_tokens,
@@ -438,6 +479,11 @@ def main() -> None:
         action="store_true",
         help="Generate synthetic mock data without making network requests",
     )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Force redownloading and overwrite existing cached dataset files",
+    )
 
     args = parser.parse_args()
 
@@ -450,6 +496,7 @@ def main() -> None:
             longmemeval_path,
             target_samples_per_task=args.longmemeval_samples_per_task,
             dry_run=args.dry_run,
+            force_download=args.force_download,
         )
 
     if args.dataset in ("all", "pg19"):
@@ -459,6 +506,7 @@ def main() -> None:
             pg19_dir,
             book_ids=selected_books,
             dry_run=args.dry_run,
+            force_download=args.force_download,
         )
 
     write_manifest(
