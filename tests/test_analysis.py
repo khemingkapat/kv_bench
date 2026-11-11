@@ -36,24 +36,39 @@ class TestAnalysisReport(unittest.TestCase):
             {"requested_ctx": 32768, "status": "SUCCESS", "peak_alloc_mb": 13800.0, "peak_reserved_mb": 14300.0, "tpot_mean_ms": 16.0, "throughput_tok_per_sec": 62.0, "ttft_sec": 0.35},
             {"requested_ctx": 49152, "status": "FAILED", "error": "Requested context length is larger than the available KV cache memory pool."},
         ]
-        n1_results = [
-            {"requested_ctx": 512, "status": "SUCCESS", "tpot_mean_ms": 10.0, "throughput_tok_per_sec": 100.0},
-            {"requested_ctx": 1024, "status": "SUCCESS", "tpot_mean_ms": 10.2, "throughput_tok_per_sec": 98.0},
-            {"requested_ctx": 2048, "status": "SUCCESS", "tpot_mean_ms": 10.5, "throughput_tok_per_sec": 95.0},
-            {"requested_ctx": 4096, "status": "SUCCESS", "tpot_mean_ms": 11.0, "throughput_tok_per_sec": 90.0},
-        ]
+        def make_conc_results(scale=1.0):
+            return [
+                {"requested_ctx": 512, "status": "SUCCESS", "tpot_mean_ms": 10.0 * scale, "throughput_tok_per_sec": 100.0 / scale, "peak_alloc_mb": 7500.0, "peak_reserved_mb": 8000.0, "ttft_sec": 0.05, "ttft_p95_sec": 0.06},
+                {"requested_ctx": 1024, "status": "SUCCESS", "tpot_mean_ms": 9.9 * scale, "throughput_tok_per_sec": 101.0 / scale, "peak_alloc_mb": 7600.0, "peak_reserved_mb": 8100.0, "ttft_sec": 0.06, "ttft_p95_sec": 0.07},
+                {"requested_ctx": 2048, "status": "SUCCESS", "tpot_mean_ms": 10.5 * scale, "throughput_tok_per_sec": 95.0 / scale, "peak_alloc_mb": 7800.0, "peak_reserved_mb": 8300.0, "ttft_sec": 0.07, "ttft_p95_sec": 0.08},
+                {"requested_ctx": 4096, "status": "SUCCESS", "tpot_mean_ms": 11.0 * scale, "throughput_tok_per_sec": 90.0 / scale, "peak_alloc_mb": 8200.0, "peak_reserved_mb": 8700.0, "ttft_sec": 0.09, "ttft_p95_sec": 0.10},
+                {"requested_ctx": 8192, "status": "SUCCESS", "tpot_mean_ms": 12.0 * scale, "throughput_tok_per_sec": 85.0 / scale, "peak_alloc_mb": 9000.0, "peak_reserved_mb": 9500.0, "ttft_sec": 0.12, "ttft_p95_sec": 0.14},
+            ]
         concurrency_grid = [
-            {"num_users": 1, "results": n1_results},
-            {"num_users": 4, "results": []},
-            {"num_users": 8, "results": []},
-            {"num_users": 12, "results": []},
-            {"num_users": 16, "results": []},
+            {"num_users": u, "results": make_conc_results(scale=1.0 + i * 0.1)}
+            for i, u in enumerate([1, 4, 8, 12, 16])
         ]
         lm_results = [
-            {"requested_ctx": 512, "status": "SUCCESS", "adherence_score": 0.95, "ttft_sec": 0.05, "tpot_mean_ms": 10.5},
-            {"requested_ctx": 1024, "status": "SUCCESS", "adherence_score": 0.92, "ttft_sec": 0.08, "tpot_mean_ms": 11.0},
-            {"requested_ctx": 2048, "status": "SUCCESS", "adherence_score": 0.90, "ttft_sec": 0.12, "tpot_mean_ms": 11.5},
-            {"requested_ctx": 4096, "status": "SUCCESS", "adherence_score": 0.88, "ttft_sec": 0.20, "tpot_mean_ms": 12.0},
+            {
+                "requested_ctx": 512, "status": "SUCCESS", "adherence_score": 0.95, "ttft_sec": 0.05, "ttft_p95_sec": 0.06, "tpot_mean_ms": 10.5, "tpot_p95_ms": 11.0,
+                "prompt_tokens": 512,
+                "extra": {"longmem_acc_overall": 0.95, "longmem_f1_overall": 0.90},
+            },
+            {
+                "requested_ctx": 1024, "status": "SUCCESS", "adherence_score": 0.92, "ttft_sec": 0.08, "ttft_p95_sec": 0.09, "tpot_mean_ms": 11.0, "tpot_p95_ms": 11.5,
+                "prompt_tokens": 1024,
+                "extra": {"longmem_acc_overall": 0.92, "longmem_f1_overall": 0.88},
+            },
+            {
+                "requested_ctx": 2048, "status": "SUCCESS", "adherence_score": 0.90, "ttft_sec": 0.12, "ttft_p95_sec": 0.14, "tpot_mean_ms": 11.5, "tpot_p95_ms": 12.0,
+                "prompt_tokens": 2048,
+                "extra": {"longmem_acc_overall": 0.90, "longmem_f1_overall": 0.85},
+            },
+            {
+                "requested_ctx": 4096, "status": "SUCCESS", "adherence_score": 0.88, "ttft_sec": 0.20, "ttft_p95_sec": 0.22, "tpot_mean_ms": 12.0, "tpot_p95_ms": 12.5,
+                "prompt_tokens": 4096,
+                "extra": {"longmem_acc_overall": 0.88, "longmem_f1_overall": 0.82},
+            },
         ]
         return {
             "hardware": {"model": "qwen3-4b", "technique": "baseline", "axes": [], "results": hw_results},
