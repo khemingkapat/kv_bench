@@ -1,0 +1,61 @@
+{
+  "manifest_version": "1.0",
+  "generated_at": "2026-11-11T11:15:00Z",
+  "provenance_type": "technique_run_manifest",
+  "milestone": "WP-3",
+  "work_package": "WP3-7",
+  "technique": "shadowkv",
+  "engine": "pytorch",
+  "axes": [
+    "SPATIAL",
+    "STRUCTURAL",
+    "TEMPORAL"
+  ],
+  "technique_config": {
+    "cache_class": "ShadowKVCache",
+    "svd_rank": 160,
+    "chunk_size": 8,
+    "topk_chunks": 256,
+    "outlier_ratio": 0.003
+  },
+  "primary_model": {
+    "name": "Qwen/Qwen3-4B-Instruct-2507",
+    "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "architecture": "Pure Dense GQA",
+    "dtype": "bfloat16"
+  },
+  "execution_environment": {
+    "cluster_node": "gpu06.slurm.cpe.kmutt.ac.th",
+    "slurm_job_id": "25947",
+    "gpu_model": "NVIDIA GeForce RTX 4090",
+    "physical_vram_gib": 23.52,
+    "process_allocator_cap_gib": 16.0
+  },
+  "source_repository": {
+    "repo": "khemingkapat/kv_bench",
+    "branch": "feat/wp3-7-shadowkv",
+    "clean_working_tree": true
+  },
+  "golden_artifacts": {
+    "shadowkv_hardware_pytorch_16gb": {
+      "path": "results/runs/wp3/shadowkv_hardware_pytorch_16gb.json",
+      "sha256": "233c856bf2df8d090453aeaa34073509399af45e9f989e4f5e2cf7fc90a2ab55",
+      "size_bytes": 11453
+    },
+    "shadowkv_longmem_pytorch_16gb": {
+      "path": "results/runs/wp3/shadowkv_longmem_pytorch_16gb.json",
+      "sha256": "a9394095a4ecd697870fb20f831473a3c596932c525122716be7676ac839d777",
+      "size_bytes": 20411
+    },
+    "shadowkv_niah_pytorch_16gb": {
+      "path": "results/runs/wp3/shadowkv_niah_pytorch_16gb.json",
+      "sha256": "6f7d45de9f8112d6af2b99b5ac3734d1359117238b9e0a649450f95f48bad073",
+      "size_bytes": 7789
+    },
+    "verify_shadowkv_pytorch_16gb": {
+      "path": "results/runs/wp3/verify_shadowkv_pytorch_16gb.json",
+      "sha256": "7e74935c63c49d93e9ccd7d45f0cb5566e552e7707e4fad4895c5c9fdf64ea85",
+      "size_bytes": 1635
+    }
+  }
+}
