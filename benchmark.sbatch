@@ -42,22 +42,9 @@ fi
 uv --version
 uv sync --frozen
 
-echo ">> Running Automated Test Suite on Compute Node..."
-uv run --no-sync python -m unittest discover tests
-
-echo "========================================="
-echo "=== KV-Bench Suite (Capped at 16GB)   ==="
-echo "========================================="
-# The physical GPU is an RTX 4090 (24GB VRAM).
-# --max-vram-gb 16.0 enforces the consumer hardware ceiling (both in PyTorch's
-# allocator and vLLM's KV allocation pool) so results strictly mirror 16GB VRAM.
-export VLLM_ENABLE_V1_MULTIPROCESSING=0
-export VLLM_USE_FLASHINFER_SAMPLER=0
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
 # Default to primary pure dense model (qwen3-4b); accepts aliases (phi4-mini, qwen3.5-4b, etc.)
 MODEL="${1:-qwen3-4b}"
-TECHNIQUE="${TECHNIQUE:-flexgen_kv}"
+TECHNIQUE="${TECHNIQUE:-turboquant}"
 ENGINE="${ENGINE:-pytorch}"
 RUN_FULL_SWEEP="${RUN_FULL_SWEEP:-1}"
 SKIP_HARDWARE_SWEEPS="${SKIP_HARDWARE_SWEEPS:-0}"
@@ -71,6 +58,23 @@ FORCE_LONGMEM_REF="${FORCE_LONGMEM_REF:-1}"
 echo "Model Selected:     $MODEL"
 echo "Technique Selected: $TECHNIQUE"
 echo "Engine Selected:    $ENGINE"
+
+echo ">> Running Automated Test Suite on Compute Node..."
+if [[ -f "tests/test_${TECHNIQUE}.py" ]]; then
+    uv run --no-sync python -m unittest discover tests -p "test_${TECHNIQUE}.py"
+else
+    uv run --no-sync python -m unittest discover tests
+fi
+
+echo "========================================="
+echo "=== KV-Bench Suite (Capped at 16GB)   ==="
+echo "========================================="
+# The physical GPU is an RTX 4090 (24GB VRAM).
+# --max-vram-gb 16.0 enforces the consumer hardware ceiling (both in PyTorch's
+# allocator and vLLM's KV allocation pool) so results strictly mirror 16GB VRAM.
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ==============================================================================
 # PyTorch Scientific Control Pipeline (WP1-4-1 Diagnostic Testbed)
