@@ -229,6 +229,7 @@ def run_benchmark(
                     trust_remote_code=True,
                     dry_run=dry_run,
                 )
+                technique.prepare_runner(llm)
             else:
                 from vllm import LLM
                 dtype_choice = "bfloat16" if (torch is not None and torch.cuda.is_bf16_supported()) else "half"

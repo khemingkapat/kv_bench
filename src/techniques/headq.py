@@ -17,6 +17,23 @@ from src.core.technique import Technique
 from src.core.workload import SyntheticFiller, Workload
 
 
+_CALIBRATION_TEXT = (
+    "In transformer attention, keys are observed by the model exclusively through "
+    "dot-product attention logits followed by softmax normalization, while values "
+    "are observed through attention-weighted linear readouts. Standard cache "
+    "quantizers minimize raw Euclidean reconstruction error in storage coordinates, "
+    "allocating bit precision to directions that queries rarely probe or to common "
+    "constant key shifts that cancel out identically under softmax invariance. "
+    "HeadQ measures quantization distortion in model-visible coordinates: score-space "
+    "Kullback-Leibler divergence for keys and squared-attention weighted error for "
+    "values. During offline calibration, post-RoPE query vectors within each attention "
+    "head concentrate strongly into a low-dimensional principal subspace. By "
+    "projecting the 2-bit key quantization residual onto this top-r orthonormal "
+    "query basis and storing a compact 4-bit side-code, decode attention recovers "
+    "most of the score-space fidelity with minimal memory overhead. "
+) * 6
+
+
 def compute_query_pca_basis(
     queries: "torch.Tensor",
     rank: int = 4,
@@ -38,31 +55,66 @@ def compute_query_pca_basis(
         raise ValueError(f"rank ({rank}) cannot exceed head dimension ({d})")
 
     q_flat = queries.contiguous().reshape(-1, d).float()
-    # Center queries along each feature dimension
     q_centered = q_flat - q_flat.mean(dim=0, keepdim=True)
 
-    # Compute SVD: q_centered = U S V^T
-    # V[:, :rank] spans the top-r directions of maximal variance
     try:
         _, _, Vh = torch.linalg.svd(q_centered, full_matrices=False)
         basis = Vh[:rank, :].transpose(0, 1).contiguous()
     except Exception:
-        # Fallback to deterministic QR decomposition if SVD fails on small rank
         q_rand = torch.eye(d, rank, dtype=torch.float32, device=queries.device)
         basis, _ = torch.linalg.qr(q_rand)
 
     return basis.to(queries.dtype)
 
 
+def compute_gqa_query_pca_bases(
+    queries: "torch.Tensor",
+    num_kv_heads: int,
+    rank: int = 4,
+) -> "torch.Tensor":
+    """Compute per-KV-head orthonormal Query-PCA bases U_h in R^(H_kv x d x r).
+
+    Pools query heads belonging to each GQA group before SVD so every KV head
+    gets its own query-aligned subspace.
+
+    Args:
+        queries: Post-RoPE query tensor of shape (batch, num_q_heads, seq_len, d).
+        num_kv_heads: Number of key/value heads.
+        rank: Number of principal components per KV head.
+
+    Returns:
+        Orthonormal bases tensor of shape (num_kv_heads, d, rank).
+    """
+    if torch is None:
+        raise RuntimeError("PyTorch is required for compute_gqa_query_pca_bases")
+    if queries.ndim != 4:
+        raise ValueError(f"Expected 4D query tensor (B, H_q, T, d), got shape {tuple(queries.shape)}")
+
+    batch, num_q_heads, seq_len, d = queries.shape
+    if num_q_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
+
+    gqa_ratio = num_q_heads // num_kv_heads
+    q_grouped = (
+        queries.reshape(batch, num_kv_heads, gqa_ratio, seq_len, d)
+        .permute(1, 0, 2, 3, 4)
+        .reshape(num_kv_heads, batch * gqa_ratio * seq_len, d)
+    )
+    bases = [compute_query_pca_basis(q_grouped[h], rank=rank) for h in range(num_kv_heads)]
+    return torch.stack(bases, dim=0)
+
+
 def quantize_key_2bit(
     k: "torch.Tensor",
-) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-    """Quantize Key vector to 2-bit symmetric representation (4 levels: -2, -1, 0, 1).
+) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+    """Quantize Key vector to 2-bit per-token asymmetric min-max representation (levels 0..3).
 
     Packs 4 2-bit values into one uint8 byte.
 
     Returns:
-        Tuple of (packed_uint8, scale, dequantized_tensor).
+        Tuple of (packed_uint8, scale, zero_point, dequantized_tensor).
     """
     if torch is None:
         raise RuntimeError("PyTorch is required for quantize_key_2bit")
@@ -71,16 +123,13 @@ def quantize_key_2bit(
     if dim % 4 != 0:
         raise ValueError(f"Head dimension must be divisible by 4 for 2-bit packing, got {dim}")
 
-    scale = k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6) / 1.5
+    k_min = k.amin(dim=-1, keepdim=True)
+    k_max = k.amax(dim=-1, keepdim=True)
+    scale = (k_max - k_min).clamp(min=1e-6) / 3.0
 
-    # Quantize to integer levels [-2, 1]
-    q = torch.round(k / scale).clamp(-2, 1).to(torch.int8)
-    dequant = q.to(k.dtype) * scale.to(k.dtype)
+    u2 = torch.round((k - k_min) / scale).clamp(0, 3).to(torch.uint8)
+    dequant = (k_min + u2.to(k.dtype) * scale.to(k.dtype)).to(k.dtype)
 
-    # Map [-2, 1] -> [0, 3] for uint8 packing
-    u2 = (q + 2).to(torch.uint8)
-
-    # Pack 4 consecutive 2-bit values into one byte
     packed = (
         (u2[..., 0::4])
         | (u2[..., 1::4] << 2)
@@ -88,33 +137,34 @@ def quantize_key_2bit(
         | (u2[..., 3::4] << 6)
     )
 
-    return packed, scale, dequant
+    return packed, scale, k_min, dequant
 
 
 def dequantize_key_2bit(
     packed: "torch.Tensor",
     scale: "torch.Tensor",
+    zero_point: "torch.Tensor",
     original_dim: int,
     dtype: "torch.dtype" = torch.bfloat16,
 ) -> "torch.Tensor":
-    """Dequantize packed 2-bit Key tensor."""
+    """Dequantize packed asymmetric 2-bit Key tensor."""
     if torch is None:
         raise RuntimeError("PyTorch is required for dequantize_key_2bit")
 
-    b0 = (packed & 0x03).to(torch.int8) - 2
-    b1 = ((packed >> 2) & 0x03).to(torch.int8) - 2
-    b2 = ((packed >> 4) & 0x03).to(torch.int8) - 2
-    b3 = ((packed >> 6) & 0x03).to(torch.int8) - 2
+    b0 = packed & 0x03
+    b1 = (packed >> 2) & 0x03
+    b2 = (packed >> 4) & 0x03
+    b3 = (packed >> 6) & 0x03
 
     shape = list(packed.shape)
     shape[-1] = original_dim
-    unpacked = torch.empty(shape, dtype=torch.int8, device=packed.device)
+    unpacked = torch.empty(shape, dtype=torch.uint8, device=packed.device)
     unpacked[..., 0::4] = b0
     unpacked[..., 1::4] = b1
     unpacked[..., 2::4] = b2
     unpacked[..., 3::4] = b3
 
-    return (unpacked.to(dtype) * scale.to(dtype)).to(dtype)
+    return (zero_point.to(dtype) + unpacked.to(dtype) * scale.to(dtype)).to(dtype)
 
 
 def compute_key_sidecode(
@@ -126,17 +176,23 @@ def compute_key_sidecode(
 
     Args:
         k_residual: Tensor of shape (..., d) representing e = k - k_base.
-        basis: Orthonormal basis matrix of shape (d, r).
-        sidecode_bits: Bitwidth for residual code coordinates (default: 4).
+        basis: Orthonormal basis matrix of shape (d, r) or per-KV-head (H_kv, d, r).
+        sidecode_bits: Bitwidth for residual code coordinates (must be 4).
 
     Returns:
         Tuple of (packed_code, scale, dequantized_projection).
     """
     if torch is None:
         raise RuntimeError("PyTorch is required for compute_key_sidecode")
+    if int(sidecode_bits) != 4:
+        raise ValueError(f"Only sidecode_bits=4 is supported, got {sidecode_bits}")
 
-    # Project residual: z = e @ basis, shape (..., r)
-    z_proj = torch.matmul(k_residual.float(), basis.float()).to(k_residual.dtype)
+    if basis.ndim == 3:
+        z_proj = torch.einsum("bhtd,hdr->bhtr", k_residual.float(), basis.float()).to(k_residual.dtype)
+    elif basis.ndim == 2:
+        z_proj = torch.matmul(k_residual.float(), basis.float()).to(k_residual.dtype)
+    else:
+        raise ValueError(f"Expected 2D (d, r) or 3D (H_kv, d, r) basis, got shape {tuple(basis.shape)}")
 
     # 4-bit uniform quantization in [-8, 7]
     scale = z_proj.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6) / 7.0
@@ -218,14 +274,14 @@ def compute_gqa_headq_attention(
     rank: int = 4,
     scale: float | None = None,
 ) -> tuple["torch.Tensor", "torch.Tensor", dict[str, float]]:
-    """Compute GQA attention using HeadQ 2-bit Key + rank-4 Additive Logit Correction.
+    """Compute GQA attention using HeadQ 2-bit Key + rank-r Additive Logit Correction.
 
     Follows HeadQ's model-visible distortion architecture:
       1. Coarse logit: s_base = (q @ k_hat_base^T) / sqrt(d)
-      2. Query projection: q_proj = q @ U in R^r
+      2. Query projection: q_proj = q @ U_h in R^r
       3. Residual logit correction: delta_s = (q_proj @ z_tilde^T) / sqrt(d)
       4. Corrected logit: s_hat = s_base + delta_s
-      5. Softmax & Value readout with 4-bit quantized Values.
+      5. Softmax & Value readout with 4-bit quantized Values, plus A^2 distortion profiling.
 
     Returns:
         Tuple of (attn_output, attn_weights, distortion_metrics).
@@ -237,12 +293,12 @@ def compute_gqa_headq_attention(
     _, num_kv_heads, seq_len_kv, _ = key.shape
     gqa_ratio = num_q_heads // num_kv_heads
 
-    # Derive or use provided orthonormal query PCA basis
+    # Derive or use provided per-KV-head orthonormal query PCA basis
     if basis is None:
-        basis = compute_query_pca_basis(query, rank=rank)
+        basis = compute_gqa_query_pca_bases(query, num_kv_heads=num_kv_heads, rank=rank)
 
-    # 1. Base 2-bit Key Quantization
-    _, k_scale, k_dequant = quantize_key_2bit(key)
+    # 1. Base asymmetric 2-bit Key Quantization
+    _, k_scale, k_zero, k_dequant = quantize_key_2bit(key)
     k_residual = key - k_dequant
 
     # 2. Key Side-code projection and quantization
@@ -256,11 +312,13 @@ def compute_gqa_headq_attention(
         expanded_k_base = k_dequant.repeat_interleave(gqa_ratio, dim=1)
         expanded_z = z_dequant.repeat_interleave(gqa_ratio, dim=1)
         expanded_v = v_dequant.repeat_interleave(gqa_ratio, dim=1)
+        expanded_v_exact = value.repeat_interleave(gqa_ratio, dim=1)
         expanded_k_exact = key.repeat_interleave(gqa_ratio, dim=1)
     else:
         expanded_k_base = k_dequant
         expanded_z = z_dequant
         expanded_v = v_dequant
+        expanded_v_exact = value
         expanded_k_exact = key
 
     softmax_scale = scale if scale is not None else (d ** -0.5)
@@ -269,7 +327,11 @@ def compute_gqa_headq_attention(
     coarse_logits = torch.matmul(query.float(), expanded_k_base.float().transpose(-2, -1)) * softmax_scale
 
     # Additive logit correction via query PCA projection
-    q_proj = torch.matmul(query.float(), basis.float()).to(query.dtype)
+    if basis.ndim == 3:
+        expanded_basis = basis.repeat_interleave(gqa_ratio, dim=0) if gqa_ratio > 1 else basis
+        q_proj = torch.einsum("bhtd,hdr->bhtr", query.float(), expanded_basis.float()).to(query.dtype)
+    else:
+        q_proj = torch.matmul(query.float(), basis.float()).to(query.dtype)
     delta_s = torch.matmul(q_proj.float(), expanded_z.float().transpose(-2, -1)) * softmax_scale
 
     # Corrected logits
@@ -277,7 +339,7 @@ def compute_gqa_headq_attention(
     attn_weights = F.softmax(corrected_logits, dim=-1).to(query.dtype)
     attn_output = torch.matmul(attn_weights, expanded_v)
 
-    # Compute Exact Logits for Distortion Profiling
+    # Compute Exact Logits for Model-Visible Distortion Profiling
     exact_logits = torch.matmul(query.float(), expanded_k_exact.float().transpose(-2, -1)) * softmax_scale
     exact_weights = F.softmax(exact_logits, dim=-1).to(query.dtype)
 
@@ -293,10 +355,14 @@ def compute_gqa_headq_attention(
         reduction="batchmean",
     ).item()
 
+    v_err_sq = (expanded_v_exact.float() - expanded_v.float()).pow(2).sum(dim=-1, keepdim=True)
+    value_a2_distortion = torch.matmul(exact_weights.float().pow(2), v_err_sq).mean().item()
+
     distortion_metrics = {
         "attention_kl_corrected": max(0.0, float(kl_div)),
         "attention_kl_coarse": max(0.0, float(kl_coarse)),
         "kl_reduction_ratio": float(1.0 - (kl_div / max(kl_coarse, 1e-9))),
+        "value_a2_distortion": max(0.0, float(value_a2_distortion)),
     }
 
     return attn_output, attn_weights, distortion_metrics
@@ -307,13 +373,13 @@ class HeadQTechnique(Technique):
     """HeadQ: Head-Wise Quantization for KV Cache with Attention Logit Preservation.
 
     Preserves model-visible attention logits through an asymmetric 2-bit quantizer-corrector:
-      1. Key vectors are quantized to an aggressive 2-bit representation (4 levels).
-      2. Key reconstruction residuals are projected onto an offline-learned rank-4 query PCA
-         orthonormal subspace, stored as a compact 4-bit side-code (16 bits/token per head).
+      1. Key vectors are quantized to an asymmetric 2-bit representation (4 levels [0, 3]).
+      2. Key reconstruction residuals are projected onto an offline-learned per-KV-head rank-r
+         post-RoPE query PCA orthonormal subspace, stored as a compact 4-bit side-code.
       3. At decode time, queries are projected into the r-dimensional subspace and an additive
-         dot-product correction is fused directly into attention logits, eliminating 85-94% of
+         dot-product correction is fused into attention logits, eliminating 85-94% of
          2-bit attention divergence with minimal computational overhead.
-      4. Value vectors are quantized at 4-bit precision according to readout geometry.
+      4. Value vectors are quantized at 4-bit precision with A^2 readout distortion profiling.
 
     Axes:
         Axis.STRUCTURAL
@@ -331,12 +397,12 @@ class HeadQTechnique(Technique):
     ):
         if int(key_bits) != 2:
             raise ValueError(f"HeadQ primary contract expects key_bits=2, got {key_bits}")
-        if int(val_bits) <= 0:
-            raise ValueError(f"val_bits must be positive, got {val_bits}")
-        if int(rank) <= 0:
-            raise ValueError(f"rank must be positive, got {rank}")
-        if int(sidecode_bits) <= 0:
-            raise ValueError(f"sidecode_bits must be positive, got {sidecode_bits}")
+        if int(val_bits) != 4:
+            raise ValueError(f"HeadQ currently supports val_bits=4 only, got {val_bits}")
+        if int(rank) <= 0 or (int(rank) % 2 != 0):
+            raise ValueError(f"rank must be a positive even integer for sidecode packing, got {rank}")
+        if int(sidecode_bits) != 4:
+            raise ValueError(f"HeadQ currently supports sidecode_bits=4 only, got {sidecode_bits}")
         if int(block_size) <= 0:
             raise ValueError(f"block_size must be positive, got {block_size}")
 
@@ -345,6 +411,106 @@ class HeadQTechnique(Technique):
         self.rank = int(rank)
         self.sidecode_bits = int(sidecode_bits)
         self.block_size = int(block_size)
+        self._calibrated_bases: dict[int, Any] = {}
+        self._calibrated_model_id: str | None = None
+        self._calibration_metrics: dict[str, float] = {}
+
+    def setup(self) -> None:
+        """Reset active cache references, scalar telemetry, and calibration state."""
+        from src.techniques.headq_cache import reset_headq_telemetry, set_active_headq_cache
+
+        set_active_headq_cache(None)
+        reset_headq_telemetry()
+        self._calibrated_bases = {}
+        self._calibrated_model_id = None
+        self._calibration_metrics = {}
+
+    def prepare_runner(self, runner: Any) -> None:
+        """Run offline post-RoPE Query-PCA calibration on the loaded PyTorchRunner model."""
+        if torch is None or F is None:
+            return
+        if runner is None or getattr(runner, "dry_run", False):
+            return
+        model = getattr(runner, "model", None)
+        tokenizer = getattr(runner, "tokenizer", None)
+        if model is None or tokenizer is None:
+            return
+
+        model_id = getattr(runner, "model_name_or_path", None)
+        if self._calibrated_bases and self._calibrated_model_id == model_id:
+            return
+
+        attn_modules = [
+            mod for name, mod in model.named_modules() if name.endswith(".self_attn") or name == "self_attn"
+        ]
+        if not attn_modules:
+            return
+
+        enc = tokenizer(
+            _CALIBRATION_TEXT,
+            return_tensors="pt",
+            truncation=True,
+            max_length=512,
+        )
+        device = getattr(runner, "device", "cpu")
+        input_ids = enc["input_ids"].to(device)
+
+        captured_q: dict[int, torch.Tensor] = {}
+        captured_kv_heads: dict[int, int] = {}
+        sample_k_v: dict[str, torch.Tensor] = {}
+        active_layer: dict[str, int | None] = {"idx": None}
+        hooks = []
+
+        for layer_idx, mod in enumerate(attn_modules):
+            def _make_pre_hook(idx: int):
+                def _pre_hook(_module, _args, _kwargs=None):
+                    active_layer["idx"] = idx
+                return _pre_hook
+            hooks.append(mod.register_forward_pre_hook(_make_pre_hook(layer_idx)))
+
+        orig_sdpa = F.scaled_dot_product_attention
+        config_kv_heads = getattr(getattr(model, "config", None), "num_key_value_heads", None)
+
+        def _wrapped_sdpa(query, key, value, *args, **kwargs):
+            idx = active_layer["idx"]
+            if idx is not None and idx not in captured_q:
+                captured_q[idx] = query.detach().cpu()
+                captured_kv_heads[idx] = int(config_kv_heads) if config_kv_heads else int(key.shape[1])
+                if idx == 0:
+                    sample_k_v["q"] = query[:, :, : min(128, query.shape[2]), :].detach().cpu()
+                    sample_k_v["k"] = key[:, :, : min(128, key.shape[2]), :].detach().cpu()
+                    sample_k_v["v"] = value[:, :, : min(128, value.shape[2]), :].detach().cpu()
+            return orig_sdpa(query, key, value, *args, **kwargs)
+
+        try:
+            F.scaled_dot_product_attention = _wrapped_sdpa
+            with torch.no_grad():
+                model(input_ids, use_cache=False)
+        finally:
+            F.scaled_dot_product_attention = orig_sdpa
+            for h in hooks:
+                h.remove()
+
+        bases: dict[int, torch.Tensor] = {}
+        for idx, q_tensor in captured_q.items():
+            num_kv = captured_kv_heads[idx]
+            bases[idx] = compute_gqa_query_pca_bases(q_tensor, num_kv_heads=num_kv, rank=self.rank)
+
+        self._calibrated_bases = bases
+        self._calibrated_model_id = model_id
+        self._calibration_metrics = {}
+        if 0 in bases and "q" in sample_k_v:
+            _, _, dist = compute_gqa_headq_attention(
+                sample_k_v["q"],
+                sample_k_v["k"],
+                sample_k_v["v"],
+                basis=bases[0],
+                rank=self.rank,
+            )
+            self._calibration_metrics = {
+                "calibration_kl_reduction_ratio": dist["kl_reduction_ratio"],
+                "calibration_value_a2_distortion": dist["value_a2_distortion"],
+            }
 
     @property
     def compression_ratio(self) -> float:
@@ -364,7 +530,7 @@ class HeadQTechnique(Technique):
         del context_length, max_tokens
         return {
             "block_size": self.block_size,
-            "kv_cache_dtype": "fp8",  # Native quantization knob
+            "kv_cache_dtype": "auto",
         }
 
     def workload(self) -> Workload:
@@ -376,25 +542,41 @@ class HeadQTechnique(Technique):
         return lambda: HeadQCache(
             rank=self.rank,
             sidecode_bits=self.sidecode_bits,
+            val_bits=self.val_bits,
+            bases=self._calibrated_bases,
         )
 
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm, workload_output
-        from src.techniques.headq_cache import get_active_headq_cache
+        from src.techniques.headq_cache import get_active_headq_cache, get_last_headq_telemetry
 
         active_cache = get_active_headq_cache()
-        quantized_bytes = (
-            active_cache.total_quantized_bytes if active_cache is not None else 0
-        )
-        effective_key_bits = self.key_bits + (self.rank * self.sidecode_bits) / 128.0
-        return {
+        telemetry = get_last_headq_telemetry()
+        if active_cache is not None:
+            quantized_bytes = active_cache.total_quantized_bytes
+            head_dim = active_cache.head_dim or telemetry.get("head_dim", 0)
+        else:
+            quantized_bytes = int(telemetry.get("quantized_cache_bytes", 0))
+            head_dim = int(telemetry.get("head_dim", 0))
+
+        effective_head_dim = float(head_dim) if head_dim > 0 else 128.0
+        effective_key_bits = self.key_bits + (self.rank * self.sidecode_bits) / effective_head_dim
+        effective_kv_bits = effective_key_bits + self.val_bits
+        compression_ratio = round(32.0 / effective_kv_bits, 2)
+
+        metrics: dict[str, Any] = {
             "key_bits": self.key_bits,
             "val_bits": self.val_bits,
             "pca_rank": self.rank,
             "sidecode_bits": self.sidecode_bits,
+            "head_dim": int(effective_head_dim),
             "effective_key_bits": effective_key_bits,
-            "compression_ratio_vs_bf16": self.compression_ratio,
+            "compression_ratio_vs_bf16": compression_ratio,
             "block_size": self.block_size,
             "model_visible_distortion_aware": True,
+            "is_query_calibrated": bool(self._calibrated_bases),
+            "calibrated_layers": len(self._calibrated_bases),
             "quantized_cache_bytes": quantized_bytes,
         }
+        metrics.update(self._calibration_metrics)
+        return metrics

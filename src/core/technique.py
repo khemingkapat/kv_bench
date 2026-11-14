@@ -29,6 +29,12 @@ class Technique(ABC):
         the auto-import in techniques/__init__.py."""
         return None
 
+    def prepare_runner(self, runner: Any) -> None:
+        """Optional hook called after PyTorchRunner loads the model and before workload execution.
+        Use this for offline model calibration (e.g., Query-PCA basis extraction)."""
+        del runner
+        return None
+
     @abstractmethod
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra kwargs merged into the vLLM LLM(...) constructor."""
