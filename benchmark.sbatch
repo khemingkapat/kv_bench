@@ -44,7 +44,7 @@ uv sync --frozen
 
 # Default to primary pure dense model (qwen3-4b); accepts aliases (phi4-mini, qwen3.5-4b, etc.)
 MODEL="${1:-qwen3-4b}"
-TECHNIQUE="${TECHNIQUE:-shadowkv}"
+TECHNIQUE="${TECHNIQUE:-turboquant}"
 ENGINE="${ENGINE:-pytorch}"
 RUN_FULL_SWEEP="${RUN_FULL_SWEEP:-1}"
 SKIP_HARDWARE_SWEEPS="${SKIP_HARDWARE_SWEEPS:-0}"
@@ -82,7 +82,6 @@ check_longmem_dataset() {
         exit 1
     fi
 }
-
 # ==============================================================================
 # PyTorch Scientific Control Pipeline (WP1-4-1 Diagnostic Testbed)
 # ==============================================================================
