@@ -106,7 +106,7 @@ def score_page_digests_gqa(
 
 def select_and_recall_pages(
     kv_scores: "torch.Tensor",
-    active_pages_budget: int = 16,
+    active_pages_budget: int = 128,
 ) -> tuple["torch.Tensor", dict[str, Any]]:
     """Rank all prompt pages by upper-bound score and select active pages for GPU residency.
 
@@ -143,7 +143,7 @@ def compute_gqa_arkvale_attention(
     key: "torch.Tensor",
     value: "torch.Tensor",
     page_size: int = 16,
-    active_pages_budget: int = 16,
+    active_pages_budget: int = 128,
     scale: float | None = None,
 ) -> tuple["torch.Tensor", "torch.Tensor", dict[str, Any]]:
     """Execute ArkVale recallable page decode attention step."""
@@ -188,6 +188,61 @@ def compute_gqa_arkvale_attention(
     return attn_output, attn_weights, telemetry
 
 
+_PYTORCH_HOOKS_INSTALLED: bool = False
+_ORIG_SDPA: Any = None
+
+
+def _install_pytorch_arkvale_hooks() -> None:
+    """Install attention wrapper into transformers ALL_ATTENTION_FUNCTIONS for ArkVale."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if _PYTORCH_HOOKS_INSTALLED:
+        return
+
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        from src.techniques.arkvale_cache import get_active_arkvale_cache
+    except ImportError:
+        return
+
+    orig_sdpa = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+    if orig_sdpa is None:
+        return
+
+    _ORIG_SDPA = orig_sdpa
+
+    def arkvale_sdpa_attention_forward(module, query, key, value, attention_mask=None, *args, **kwargs):
+        cache = get_active_arkvale_cache()
+        if cache is not None and getattr(cache, "is_arkvale", False):
+            layer_idx = getattr(module, "layer_idx", None)
+            if layer_idx is not None and layer_idx < len(cache.layers):
+                layer = cache.layers[layer_idx]
+                if query.shape[-2] == 1 and getattr(layer, "needs_page_selection", False):
+                    key, value = layer.select_active_pages(query)
+                    attention_mask = None
+                    if "is_causal" in kwargs:
+                        kwargs["is_causal"] = False
+
+        return _ORIG_SDPA(module, query, key, value, attention_mask, *args, **kwargs)
+
+    ALL_ATTENTION_FUNCTIONS.register("sdpa", arkvale_sdpa_attention_forward)
+    _PYTORCH_HOOKS_INSTALLED = True
+
+
+def _uninstall_pytorch_arkvale_hooks() -> None:
+    """Restore original sdpa attention forward in transformers ALL_ATTENTION_FUNCTIONS."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if not _PYTORCH_HOOKS_INSTALLED or _ORIG_SDPA is None:
+        return
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        ALL_ATTENTION_FUNCTIONS.register("sdpa", _ORIG_SDPA)
+        _PYTORCH_HOOKS_INSTALLED = False
+        _ORIG_SDPA = None
+    except ImportError:
+        pass
+
+
 @register("arkvale")
 class ArkValeTechnique(Technique):
     """ArkVale: Efficient Generative LLM Inference with Recallable Key-Value Eviction.
@@ -209,7 +264,7 @@ class ArkValeTechnique(Technique):
     def __init__(
         self,
         page_size: int = 16,
-        active_pages_budget: int = 16,
+        active_pages_budget: int = 128,
         exempt_early_layers: int = 2,
         block_size: int = 16,
     ):
@@ -226,6 +281,16 @@ class ArkValeTechnique(Technique):
         self.active_pages_budget = int(active_pages_budget)
         self.exempt_early_layers = int(exempt_early_layers)
         self.block_size = int(block_size)
+        self._telemetry: dict[str, int] = {
+            "pcie_transfer_bytes": 0,
+            "recalled_pages": 0,
+        }
+
+    def setup(self) -> None:
+        """Reset run-level telemetry counters and install PyTorch SDPA hooks."""
+        self._telemetry["pcie_transfer_bytes"] = 0
+        self._telemetry["recalled_pages"] = 0
+        _install_pytorch_arkvale_hooks()
 
     @property
     def compression_ratio(self) -> float:
@@ -247,19 +312,26 @@ class ArkValeTechnique(Technique):
     def pytorch_cache_factory(self) -> Any:
         from src.techniques.arkvale_cache import ArkValeCache
 
+        self._telemetry["pcie_transfer_bytes"] = 0
+        self._telemetry["recalled_pages"] = 0
         return lambda: ArkValeCache(
             page_size=self.page_size,
             active_pages_budget=self.active_pages_budget,
             exempt_early_layers=self.exempt_early_layers,
+            telemetry_sink=self._telemetry,
         )
 
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm, workload_output
         from src.techniques.arkvale_cache import get_active_arkvale_cache
 
-        active_cache = get_active_arkvale_cache()
-        pcie_bytes = active_cache.total_bytes_transferred_pcie if active_cache is not None else 0
-        recalled_pages = active_cache.total_recalled_pages if active_cache is not None else 0
+        pcie_bytes = self._telemetry.get("pcie_transfer_bytes", 0)
+        recalled_pages = self._telemetry.get("recalled_pages", 0)
+        if pcie_bytes == 0 and recalled_pages == 0:
+            active_cache = get_active_arkvale_cache()
+            if active_cache is not None:
+                pcie_bytes = active_cache.total_bytes_transferred_pcie
+                recalled_pages = active_cache.total_recalled_pages
 
         return {
             "page_size": self.page_size,

@@ -41,8 +41,9 @@ class ArkValeLayer(DynamicLayer):
         self,
         layer_idx: int = 0,
         page_size: int = 16,
-        active_pages_budget: int = 16,
+        active_pages_budget: int = 128,
         exempt_early_layers: int = 2,
+        telemetry_sink: dict[str, int] | None = None,
     ):
         self._keys_fallback: torch.Tensor | None = None
         self._values_fallback: torch.Tensor | None = None
@@ -51,6 +52,7 @@ class ArkValeLayer(DynamicLayer):
         self.page_size = int(page_size)
         self.active_pages_budget = int(active_pages_budget)
         self.exempt_early_layers = int(exempt_early_layers)
+        self._telemetry_sink = telemetry_sink
 
         self.capacity: int = 0
         self.page_capacity: int = 0
@@ -67,7 +69,7 @@ class ArkValeLayer(DynamicLayer):
         self.gpu_b_min: torch.Tensor | None = None
         self.gpu_b_max: torch.Tensor | None = None
 
-        # Compact active sparse GPU subset during pruned decode
+        # Compact active sparse GPU subset during pruned decode (or full GPU-resident for exempt layers)
         self.gpu_active_k: torch.Tensor | None = None
         self.gpu_active_v: torch.Tensor | None = None
 
@@ -75,8 +77,23 @@ class ArkValeLayer(DynamicLayer):
         self.resident_pages: set[int] = set()
         self.total_bytes_transferred_pcie: int = 0
         self.total_recalled_pages: int = 0
+        self.needs_page_selection: bool = False
 
         super().__init__()
+
+    def _record_pcie_bytes(self, nbytes: int) -> None:
+        self.total_bytes_transferred_pcie += nbytes
+        if self._telemetry_sink is not None:
+            self._telemetry_sink["pcie_transfer_bytes"] = (
+                self._telemetry_sink.get("pcie_transfer_bytes", 0) + nbytes
+            )
+
+    def _record_recalled_pages(self, count: int) -> None:
+        self.total_recalled_pages += count
+        if self._telemetry_sink is not None:
+            self._telemetry_sink["recalled_pages"] = (
+                self._telemetry_sink.get("recalled_pages", 0) + count
+            )
 
     @property
     def original_positions(self) -> list[int]:
@@ -181,6 +198,56 @@ class ArkValeLayer(DynamicLayer):
             self.gpu_b_max[:, :, p] = c + r_mean
             self.gpu_b_min[:, :, p] = c - r_mean
 
+    def select_active_pages(self, query_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score AABB digests with actual query vectors and recall top-k pages to GPU."""
+        from src.techniques.arkvale import score_page_digests_gqa
+
+        self.needs_page_selection = False
+        assert self.cpu_k_buf is not None and self.cpu_v_buf is not None
+        assert self.gpu_b_min is not None and self.gpu_b_max is not None
+
+        total_pages = math.ceil(self.total_tokens_seen / self.page_size)
+        b_min = self.gpu_b_min[:, :, :total_pages, :]
+        b_max = self.gpu_b_max[:, :, :total_pages, :]
+
+        batch_size = self.cpu_k_buf.shape[0]
+        num_kv = self.cpu_k_buf.shape[1]
+        num_q_heads = query_states.shape[1]
+        gqa_ratio = max(1, num_q_heads // num_kv)
+
+        kv_scores = score_page_digests_gqa(query_states, b_min, b_max, gqa_ratio=gqa_ratio)
+        page_scores = kv_scores.mean(dim=(0, 1))
+
+        k_budget = max(1, min(self.active_pages_budget, total_pages) - 2)
+        _, top_pages = torch.topk(page_scores, k=min(k_budget, total_pages))
+        selected_pages = set(top_pages.tolist()) | {0, total_pages - 1}
+
+        latest_page = total_pages - 1
+        recalled = (
+            (selected_pages - self.resident_pages - {latest_page})
+            if self.resident_pages
+            else set()
+        )
+        self.resident_pages = selected_pages
+        if recalled:
+            self._record_recalled_pages(len(recalled))
+            recalled_tokens = len(recalled) * self.page_size
+            self._record_pcie_bytes(
+                2 * batch_size * num_kv * recalled_tokens * self.head_dim * self.cpu_k_buf.element_size()
+            )
+
+        fetch_indices: list[int] = []
+        for p in sorted(selected_pages):
+            s = p * self.page_size
+            e = min(self.total_tokens_seen, (p + 1) * self.page_size)
+            fetch_indices.extend(range(s, e))
+
+        self.active_positions = fetch_indices
+        idx_cpu = torch.tensor(fetch_indices, dtype=torch.long)
+        self.gpu_active_k = self.cpu_k_buf[:, :, idx_cpu].to(self.target_device, non_blocking=True)
+        self.gpu_active_v = self.cpu_v_buf[:, :, idx_cpu].to(self.target_device, non_blocking=True)
+        return self.gpu_active_k, self.gpu_active_v
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -201,6 +268,22 @@ class ArkValeLayer(DynamicLayer):
         self.target_device = key_states.device
         self.head_dim = head_dim
 
+        is_exempt = self.layer_idx < self.exempt_early_layers
+        if is_exempt:
+            # Exempt early layers remain GPU-resident with zero CPU offloading or PCIe traffic
+            if self.gpu_active_k is None:
+                self.gpu_active_k = key_states
+                self.gpu_active_v = value_states
+            else:
+                self.gpu_active_k = torch.cat([self.gpu_active_k, key_states], dim=-2)
+                self.gpu_active_v = torch.cat([self.gpu_active_v, value_states], dim=-2)
+            self.total_tokens_seen += new_tokens
+            total_pages = math.ceil(self.total_tokens_seen / self.page_size)
+            self.resident_pages = set(range(total_pages))
+            self.active_positions = list(range(self.total_tokens_seen))
+            self.needs_page_selection = False
+            return self.gpu_active_k, self.gpu_active_v
+
         curr = self.total_tokens_seen
         self._ensure_capacity(
             batch_size, num_kv, head_dim, key_states.device, key_states.dtype, curr + new_tokens
@@ -209,7 +292,7 @@ class ArkValeLayer(DynamicLayer):
         assert self.cpu_k_buf is not None and self.cpu_v_buf is not None
         self.cpu_k_buf[:, :, curr : curr + new_tokens].copy_(key_states, non_blocking=True)
         self.cpu_v_buf[:, :, curr : curr + new_tokens].copy_(value_states, non_blocking=True)
-        self.total_bytes_transferred_pcie += (
+        self._record_pcie_bytes(
             (key_states.nelement() + value_states.nelement()) * key_states.element_size()
         )
 
@@ -217,52 +300,29 @@ class ArkValeLayer(DynamicLayer):
         self.total_tokens_seen = new_total
         self._update_incremental_digests(key_states, curr, new_total)
 
-        is_exempt = self.layer_idx < self.exempt_early_layers
         total_pages = math.ceil(new_total / self.page_size)
 
-        if not is_exempt and new_tokens == 1 and total_pages > self.active_pages_budget:
-            assert self.gpu_b_min is not None and self.gpu_b_max is not None
-            b_min = self.gpu_b_min[:, :, :total_pages, :]
-            b_max = self.gpu_b_max[:, :, :total_pages, :]
+        if new_tokens == 1 and total_pages > self.active_pages_budget:
+            query_states = kwargs.get("query_states")
+            if query_states is None and args and isinstance(args[0], dict):
+                query_states = args[0].get("query_states")
+            if query_states is not None:
+                return self.select_active_pages(query_states)
+            # Defer selection to SDPA hook where actual query_states is available
+            self.needs_page_selection = True
+            return key_states, value_states
 
-            q_proxy = key_states.unsqueeze(-2)
-            prod_min = q_proxy * b_min.unsqueeze(-3)
-            prod_max = q_proxy * b_max.unsqueeze(-3)
-            page_scores = torch.maximum(prod_min, prod_max).sum(dim=-1).mean(dim=(0, 1, 2))
-
-            k_budget = max(1, min(self.active_pages_budget, total_pages) - 2)
-            _, top_pages = torch.topk(page_scores, k=k_budget)
-            selected_pages = set(top_pages.tolist()) | {0, total_pages - 1}
-
-            recalled = selected_pages.difference(self.resident_pages) if self.resident_pages else set()
-            self.resident_pages = selected_pages
-            if recalled:
-                self.total_recalled_pages += len(recalled)
-                recalled_tokens = len(recalled) * self.page_size
-                self.total_bytes_transferred_pcie += (
-                    2 * batch_size * num_kv * recalled_tokens * head_dim * key_states.element_size()
-                )
-
-            fetch_indices: list[int] = []
-            for p in sorted(selected_pages):
-                s = p * self.page_size
-                e = min(new_total, (p + 1) * self.page_size)
-                fetch_indices.extend(range(s, e))
-
-            self.active_positions = fetch_indices
-            idx_cpu = torch.tensor(fetch_indices, dtype=torch.long)
-            self.gpu_active_k = self.cpu_k_buf[:, :, idx_cpu].to(key_states.device, non_blocking=True)
-            self.gpu_active_v = self.cpu_v_buf[:, :, idx_cpu].to(key_states.device, non_blocking=True)
-            return self.gpu_active_k, self.gpu_active_v
-
-        # Prefill or exempt layers: return reconstructed view without pinning redundant GPU copies on self
+        # Prefill or under budget: remain GPU-resident without redundant CPU->GPU round-trips
+        self.needs_page_selection = False
         self.resident_pages = set(range(total_pages))
         self.active_positions = list(range(new_total))
-        self.gpu_active_k = None
-        self.gpu_active_v = None
-        k_out = self.cpu_k_buf[:, :, :new_total].to(key_states.device, non_blocking=True)
-        v_out = self.cpu_v_buf[:, :, :new_total].to(key_states.device, non_blocking=True)
-        return k_out, v_out
+        if self.gpu_active_k is None:
+            self.gpu_active_k = key_states
+            self.gpu_active_v = value_states
+        else:
+            self.gpu_active_k = torch.cat([self.gpu_active_k, key_states], dim=-2)
+            self.gpu_active_v = torch.cat([self.gpu_active_v, value_states], dim=-2)
+        return self.gpu_active_k, self.gpu_active_v
 
     def get_seq_length(self) -> int:
         return self.total_tokens_seen
@@ -278,6 +338,7 @@ class ArkValeLayer(DynamicLayer):
         self.gpu_active_v = None
         self.total_bytes_transferred_pcie = 0
         self.total_recalled_pages = 0
+        self.needs_page_selection = False
         self.is_initialized = False
         self._keys_fallback = None
         self._values_fallback = None
@@ -296,12 +357,14 @@ class ArkValeCache(Cache):
     def __init__(
         self,
         page_size: int = 16,
-        active_pages_budget: int = 16,
+        active_pages_budget: int = 128,
         exempt_early_layers: int = 2,
+        telemetry_sink: dict[str, int] | None = None,
     ):
         self.page_size = int(page_size)
         self.active_pages_budget = int(active_pages_budget)
         self.exempt_early_layers = int(exempt_early_layers)
+        self._telemetry_sink = telemetry_sink
 
         super().__init__(
             layer_class_to_replicate=lambda: ArkValeLayer(
@@ -309,6 +372,7 @@ class ArkValeCache(Cache):
                 page_size=self.page_size,
                 active_pages_budget=self.active_pages_budget,
                 exempt_early_layers=self.exempt_early_layers,
+                telemetry_sink=self._telemetry_sink,
             )
         )
         set_active_arkvale_cache(self)
