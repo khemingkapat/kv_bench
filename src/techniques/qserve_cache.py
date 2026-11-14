@@ -10,7 +10,7 @@ except ImportError:
     torch = None  # type: ignore[assignment]
 
 from transformers.cache_utils import Cache, DynamicLayer
-from src.techniques.qserve_kv4 import dequantize_kv_int4, quantize_kv_int4
+from src.techniques.qserve_kv4 import dequantize_kv_uint4, quantize_kv_uint4
 
 _ACTIVE_QSERVE_CACHE_REF: weakref.ReferenceType[QServeKVCache] | None = None
 
@@ -33,11 +33,11 @@ def set_active_qserve_cache(cache: QServeKVCache | None) -> None:
 
 
 class QServeKVLayer(DynamicLayer):
-    """Cache layer implementing QServe SmoothAttention + symmetric per-group INT4 KV storage.
+    """Cache layer implementing QServe SmoothAttention + asymmetric per-group UINT4 KV storage.
 
     Persistent state resides strictly in packed uint8 (4-bit) buffers and compact FP16/BF16
-    group scales using pre-allocated capacity buffers to eliminate decode-loop fragmentation.
-    Full floating-point tensors are reconstructed cleanly on demand for Hugging Face SDPA.
+    group scales and zero points using pre-allocated capacity buffers to eliminate decode-loop
+    fragmentation. Full floating-point tensors are reconstructed cleanly on demand for HF SDPA.
     """
 
     is_sliding = False
@@ -59,8 +59,10 @@ class QServeKVLayer(DynamicLayer):
         self.smooth_k: torch.Tensor | None = None
         self.k_packed_buf: torch.Tensor | None = None
         self.k_scales_buf: torch.Tensor | None = None
+        self.k_zeros_buf: torch.Tensor | None = None
         self.v_packed_buf: torch.Tensor | None = None
         self.v_scales_buf: torch.Tensor | None = None
+        self.v_zeros_buf: torch.Tensor | None = None
 
         super().__init__()
 
@@ -71,18 +73,23 @@ class QServeKVLayer(DynamicLayer):
 
     @property
     def original_positions(self) -> list[int]:
-        """All ingested token positions are physically preserved in quantized INT4 storage."""
+        """All ingested token positions are physically preserved in quantized UINT4 storage."""
         return list(range(self.total_tokens_seen))
 
     @property
     def keys(self) -> torch.Tensor | None:
         if not self.is_initialized or self.total_tokens_seen == 0:
             return self._keys_fallback
-        assert self.k_packed_buf is not None and self.k_scales_buf is not None
+        assert (
+            self.k_packed_buf is not None
+            and self.k_scales_buf is not None
+            and self.k_zeros_buf is not None
+        )
         p_view = self.k_packed_buf[:, :, : self.total_tokens_seen, :]
         s_view = self.k_scales_buf[:, :, : self.total_tokens_seen, :, :]
-        recon = dequantize_kv_int4(
-            p_view, s_view, original_dtype=self.target_dtype, group_size=self.group_size
+        z_view = self.k_zeros_buf[:, :, : self.total_tokens_seen, :, :]
+        recon = dequantize_kv_uint4(
+            p_view, s_view, z_view, original_dtype=self.target_dtype, group_size=self.group_size
         )
         if self.smooth_k is not None:
             recon = (recon * self.smooth_k).to(self.target_dtype)
@@ -96,11 +103,16 @@ class QServeKVLayer(DynamicLayer):
     def values(self) -> torch.Tensor | None:
         if not self.is_initialized or self.total_tokens_seen == 0:
             return self._values_fallback
-        assert self.v_packed_buf is not None and self.v_scales_buf is not None
+        assert (
+            self.v_packed_buf is not None
+            and self.v_scales_buf is not None
+            and self.v_zeros_buf is not None
+        )
         p_view = self.v_packed_buf[:, :, : self.total_tokens_seen, :]
         s_view = self.v_scales_buf[:, :, : self.total_tokens_seen, :, :]
-        return dequantize_kv_int4(
-            p_view, s_view, original_dtype=self.target_dtype, group_size=self.group_size
+        z_view = self.v_zeros_buf[:, :, : self.total_tokens_seen, :, :]
+        return dequantize_kv_uint4(
+            p_view, s_view, z_view, original_dtype=self.target_dtype, group_size=self.group_size
         )
 
     @values.setter
@@ -141,19 +153,25 @@ class QServeKVLayer(DynamicLayer):
             dtype=target_dtype,
             device=target_device,
         )
+        new_k_z = torch.empty_like(new_k_s)
         new_v_p = torch.empty_like(new_k_p)
         new_v_s = torch.empty_like(new_k_s)
+        new_v_z = torch.empty_like(new_k_s)
 
         if self.total_tokens_seen > 0 and self.k_packed_buf is not None:
             new_k_p[:, :, : self.total_tokens_seen].copy_(self.k_packed_buf[:, :, : self.total_tokens_seen])
             new_k_s[:, :, : self.total_tokens_seen].copy_(self.k_scales_buf[:, :, : self.total_tokens_seen])
+            new_k_z[:, :, : self.total_tokens_seen].copy_(self.k_zeros_buf[:, :, : self.total_tokens_seen])
             new_v_p[:, :, : self.total_tokens_seen].copy_(self.v_packed_buf[:, :, : self.total_tokens_seen])
             new_v_s[:, :, : self.total_tokens_seen].copy_(self.v_scales_buf[:, :, : self.total_tokens_seen])
+            new_v_z[:, :, : self.total_tokens_seen].copy_(self.v_zeros_buf[:, :, : self.total_tokens_seen])
 
         self.k_packed_buf = new_k_p
         self.k_scales_buf = new_k_s
+        self.k_zeros_buf = new_k_z
         self.v_packed_buf = new_v_p
         self.v_scales_buf = new_v_s
+        self.v_zeros_buf = new_v_z
         self.capacity = new_capacity
 
     def _ensure_smooth_k(self, key_states: torch.Tensor) -> None:
@@ -184,7 +202,7 @@ class QServeKVLayer(DynamicLayer):
         *args: Any,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Quantize incoming KV states with SmoothAttention + INT4 and reconstruct working tensors."""
+        """Quantize incoming KV states with SmoothAttention + UINT4 and reconstruct working tensors."""
         if not self.is_initialized:
             self.lazy_initialization(key_states, value_states)
 
@@ -201,21 +219,31 @@ class QServeKVLayer(DynamicLayer):
         assert self.smooth_k is not None
         k_smooth = (key_states / self.smooth_k).to(key_states.dtype)
 
-        k_p, k_s = quantize_kv_int4(k_smooth, group_size=self.group_size)
-        v_p, v_s = quantize_kv_int4(value_states, group_size=self.group_size)
+        k_p, k_s, k_z = quantize_kv_uint4(k_smooth, group_size=self.group_size)
+        v_p, v_s, v_z = quantize_kv_uint4(value_states, group_size=self.group_size)
 
         curr = self.total_tokens_seen
         self._ensure_capacity(
             batch_size, num_kv, head_dim, key_states.device, key_states.dtype, curr + new_tokens
         )
 
-        assert self.k_packed_buf is not None and self.k_scales_buf is not None
-        assert self.v_packed_buf is not None and self.v_scales_buf is not None
+        assert (
+            self.k_packed_buf is not None
+            and self.k_scales_buf is not None
+            and self.k_zeros_buf is not None
+        )
+        assert (
+            self.v_packed_buf is not None
+            and self.v_scales_buf is not None
+            and self.v_zeros_buf is not None
+        )
 
         self.k_packed_buf[:, :, curr : curr + new_tokens].copy_(k_p)
         self.k_scales_buf[:, :, curr : curr + new_tokens].copy_(k_s)
+        self.k_zeros_buf[:, :, curr : curr + new_tokens].copy_(k_z)
         self.v_packed_buf[:, :, curr : curr + new_tokens].copy_(v_p)
         self.v_scales_buf[:, :, curr : curr + new_tokens].copy_(v_s)
+        self.v_zeros_buf[:, :, curr : curr + new_tokens].copy_(v_z)
 
         self.total_tokens_seen += new_tokens
 
@@ -226,17 +254,26 @@ class QServeKVLayer(DynamicLayer):
 
     @property
     def quantized_bytes(self) -> int:
-        if self.total_tokens_seen == 0 or self.k_packed_buf is None:
+        if (
+            self.total_tokens_seen == 0
+            or self.k_packed_buf is None
+            or self.k_zeros_buf is None
+            or self.v_zeros_buf is None
+        ):
             return 0
         kp = self.k_packed_buf[:, :, : self.total_tokens_seen]
         ks = self.k_scales_buf[:, :, : self.total_tokens_seen]
+        kz = self.k_zeros_buf[:, :, : self.total_tokens_seen]
         vp = self.v_packed_buf[:, :, : self.total_tokens_seen]
         vs = self.v_scales_buf[:, :, : self.total_tokens_seen]
+        vz = self.v_zeros_buf[:, :, : self.total_tokens_seen]
         return (
             kp.nelement() * kp.element_size()
             + ks.nelement() * ks.element_size()
+            + kz.nelement() * kz.element_size()
             + vp.nelement() * vp.element_size()
             + vs.nelement() * vs.element_size()
+            + vz.nelement() * vz.element_size()
         )
 
     def get_seq_length(self) -> int:
@@ -259,7 +296,7 @@ class QServeKVLayer(DynamicLayer):
 
 
 class QServeKVCache(Cache):
-    """Subclass of transformers.cache_utils.Cache implementing QServe SmoothAttention + INT4 KV storage."""
+    """Subclass of transformers.cache_utils.Cache implementing QServe SmoothAttention + UINT4 KV storage."""
 
     is_qserve = True
 

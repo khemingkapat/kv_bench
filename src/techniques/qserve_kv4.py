@@ -69,7 +69,7 @@ def compute_smooth_attention_scales(
             f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
         )
 
-    group_size = num_q_heads // num_kv_heads
+    gqa_ratio = num_q_heads // num_kv_heads
 
     # Compute maximum absolute channel activations:
     # key: (batch, num_kv_heads, kv_len, head_dim) -> max over batch, len -> (num_kv_heads, head_dim)
@@ -79,8 +79,8 @@ def compute_smooth_attention_scales(
     q_abs_max = query.abs().amax(dim=(0, 2)).clamp(min=eps)  # (num_q_heads, head_dim)
 
     # Pool query activations across each GQA group:
-    # (num_kv_heads, group_size, head_dim) -> mean over group_size -> (num_kv_heads, head_dim)
-    q_abs_max_grouped = q_abs_max.reshape(num_kv_heads, group_size, head_dim).mean(dim=1)
+    # (num_kv_heads, gqa_ratio, head_dim) -> mean over gqa_ratio -> (num_kv_heads, head_dim)
+    q_abs_max_grouped = q_abs_max.reshape(num_kv_heads, gqa_ratio, head_dim).mean(dim=1)
 
     # Calculate optimal migration scale s: (num_kv_heads, head_dim)
     scale = (k_abs_max.pow(alpha) / q_abs_max_grouped.pow(1.0 - alpha)).clamp(min=1e-3, max=1e3)
@@ -89,7 +89,7 @@ def compute_smooth_attention_scales(
     s_k = scale.unsqueeze(0).unsqueeze(2)
 
     # Expand scale across query heads in each group: (1, num_q_heads, 1, head_dim)
-    s_q = scale.repeat_interleave(group_size, dim=0).unsqueeze(0).unsqueeze(2)
+    s_q = scale.repeat_interleave(gqa_ratio, dim=0).unsqueeze(0).unsqueeze(2)
 
     k_smooth = (key / s_k).to(key.dtype)
     q_smooth = (query * s_q).to(query.dtype)
@@ -97,58 +97,64 @@ def compute_smooth_attention_scales(
     return q_smooth, k_smooth
 
 
-def pack_int4(int4_tensor: "torch.Tensor") -> "torch.Tensor":
-    """Pack signed INT4 values in range [-8, 7] into unsigned UINT8 bytes.
+def pack_uint4(uint4_tensor: "torch.Tensor") -> "torch.Tensor":
+    """Pack unsigned UINT4 values in range [0, 15] into unsigned UINT8 bytes.
 
     Two 4-bit values along the trailing dimension are packed into one byte:
         byte = (val1 & 0x0F) | ((val2 & 0x0F) << 4)
     Trailing dimension size must be even.
     """
     if torch is None:
-        raise RuntimeError("PyTorch is required for pack_int4")
+        raise RuntimeError("PyTorch is required for pack_uint4")
 
-    if int4_tensor.size(-1) % 2 != 0:
-        raise ValueError(f"Last dimension must be even for INT4 packing, got {int4_tensor.size(-1)}")
+    if uint4_tensor.size(-1) % 2 != 0:
+        raise ValueError(f"Last dimension must be even for UINT4 packing, got {uint4_tensor.size(-1)}")
 
-    # Map signed [-8, 7] to unsigned 4-bit [0, 15]
-    u4 = (int4_tensor.clamp(-8, 7) + 8).to(torch.uint8)
+    u4 = uint4_tensor.clamp(0, 15).to(torch.uint8)
     low_nibble = u4[..., 0::2]
     high_nibble = u4[..., 1::2]
     packed = low_nibble | (high_nibble << 4)
     return packed
 
 
-def unpack_int4(packed_tensor: "torch.Tensor", original_dim: int) -> "torch.Tensor":
-    """Unpack UINT8 bytes into signed INT4 values in range [-8, 7]."""
+def unpack_uint4(
+    packed_tensor: "torch.Tensor",
+    original_dim: int | None = None,
+) -> "torch.Tensor":
+    """Unpack UINT8 bytes into unsigned UINT4 values in range [0, 15]."""
     if torch is None:
-        raise RuntimeError("PyTorch is required for unpack_int4")
+        raise RuntimeError("PyTorch is required for unpack_uint4")
 
-    low_nibble = (packed_tensor & 0x0F).to(torch.int8) - 8
-    high_nibble = ((packed_tensor >> 4) & 0x0F).to(torch.int8) - 8
+    if original_dim is None:
+        original_dim = packed_tensor.size(-1) * 2
+
+    low_nibble = packed_tensor & 0x0F
+    high_nibble = (packed_tensor >> 4) & 0x0F
 
     # Interleave low and high nibbles back to original dimension
     shape = list(packed_tensor.shape)
     shape[-1] = original_dim
-    unpacked = torch.empty(shape, dtype=torch.int8, device=packed_tensor.device)
+    unpacked = torch.empty(shape, dtype=torch.uint8, device=packed_tensor.device)
     unpacked[..., 0::2] = low_nibble
     unpacked[..., 1::2] = high_nibble
     return unpacked
 
 
-def quantize_kv_int4(
+def quantize_kv_uint4(
     tensor: "torch.Tensor",
     group_size: int = 32,
     eps: float = 1e-5,
-) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """Quantize tensor along channel dimension to symmetric 4-bit representation (INT4).
+) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+    """Quantize tensor along channel dimension to asymmetric 4-bit representation (UINT4).
 
     Partitions trailing channel dimension `D` into groups of `group_size` elements
-    and computes per-group scale factors:
-        scale = max(|group|) / 7
-        q = round(group / scale).clamp(-8, 7)
+    and computes per-group scale and zero-point factors in float32 before casting
+    to `tensor.dtype`:
+        zero_point = min(group)
+        scale = (max(group) - min(group)) / 15
+        q = round((group - zero_point) / scale).clamp(0, 15)
 
-    Packs the resulting INT4 values into a `torch.uint8` tensor reducing tensor
-    VRAM footprint by 4x relative to FP16 / BF16.
+    Packs the resulting UINT4 values into a `torch.uint8` tensor.
 
     Args:
         tensor: Floating point tensor of shape `(..., D)`.
@@ -156,12 +162,13 @@ def quantize_kv_int4(
         eps: Numerical stability constant.
 
     Returns:
-        Tuple of `(packed_tensor, scales)` where:
+        Tuple of `(packed_tensor, scales, zeros)` where:
           - `packed_tensor` has shape `(..., D // 2)` and dtype `torch.uint8`
           - `scales` has shape `(..., D // group_size, 1)` and dtype `tensor.dtype`
+          - `zeros` has shape `(..., D // group_size, 1)` and dtype `tensor.dtype`
     """
     if torch is None:
-        raise RuntimeError("PyTorch is required for quantize_kv_int4")
+        raise RuntimeError("PyTorch is required for quantize_kv_uint4")
 
     head_dim = tensor.size(-1)
     if head_dim % group_size != 0:
@@ -170,38 +177,49 @@ def quantize_kv_int4(
     orig_shape = tensor.shape
     num_groups = head_dim // group_size
 
-    # Reshape into groups: (..., num_groups, group_size)
-    grouped = tensor.contiguous().reshape(*orig_shape[:-1], num_groups, group_size)
+    # Reshape into groups in float32 to avoid BF16/FP16 range cancellation: (..., num_groups, group_size)
+    grouped_f = tensor.contiguous().reshape(*orig_shape[:-1], num_groups, group_size).float()
 
-    # Compute per-group symmetric absolute maximum scale: (..., num_groups, 1)
-    max_val = grouped.abs().amax(dim=-1, keepdim=True).clamp(min=eps)
-    scale = (max_val / 7.0).to(tensor.dtype)
+    x_min = grouped_f.amin(dim=-1, keepdim=True)
+    x_max = grouped_f.amax(dim=-1, keepdim=True)
 
-    # Quantize to INT4 range [-8, 7]
-    int4_val = torch.round(grouped / scale).clamp(-8, 7).reshape(orig_shape)
+    # Truncate scale and zero_point to stored dtype BEFORE rounding q so dequantization matches exact grid
+    scale = ((x_max - x_min) / 15.0).clamp(min=eps).to(tensor.dtype)
+    zero_point = x_min.to(tensor.dtype)
+
+    # Quantize to UINT4 range [0, 15]
+    uint4_val = (
+        torch.round((grouped_f - zero_point.float()) / scale.float())
+        .clamp(0, 15)
+        .to(torch.uint8)
+        .reshape(orig_shape)
+    )
 
     # Pack into uint8 (2 values per byte)
-    packed = pack_int4(int4_val)
-    return packed, scale
+    packed = pack_uint4(uint4_val)
+    return packed, scale, zero_point
 
 
-def dequantize_kv_int4(
+def dequantize_kv_uint4(
     packed_tensor: "torch.Tensor",
     scales: "torch.Tensor",
+    zeros: "torch.Tensor",
     original_dtype: "torch.dtype" = torch.bfloat16,
     group_size: int = 32,
 ) -> "torch.Tensor":
-    """Dequantize packed INT4 KV tensor back to original floating point dtype."""
+    """Dequantize packed UINT4 KV tensor back to original floating point dtype."""
     if torch is None:
-        raise RuntimeError("PyTorch is required for dequantize_kv_int4")
+        raise RuntimeError("PyTorch is required for dequantize_kv_uint4")
 
     packed_dim = packed_tensor.size(-1)
     original_dim = packed_dim * 2
     num_groups = original_dim // group_size
 
-    unpacked = unpack_int4(packed_tensor, original_dim).to(original_dtype)
+    unpacked = unpack_uint4(packed_tensor, original_dim).to(original_dtype)
     grouped = unpacked.reshape(*unpacked.shape[:-1], num_groups, group_size)
-    dequantized = (grouped * scales).reshape(*unpacked.shape[:-1], original_dim)
+    dequantized = (grouped * scales.to(original_dtype) + zeros.to(original_dtype)).reshape(
+        *unpacked.shape[:-1], original_dim
+    )
     return dequantized.to(original_dtype)
 
 
@@ -213,10 +231,12 @@ def compute_gqa_qserve_attention(
     group_size: int = 32,
     scale: float | None = None,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """Compute Grouped-Query Attention with QServe SmoothAttention + INT4 KV cache quantization.
+    """Offline mathematical reference utility for QServe SmoothAttention + UINT4 KV attention.
 
-    Applies SmoothAttention to suppress outlier channels, quantizes Key and Value
-    tensors to INT4, dequantizes them, and performs GQA attention computation.
+    Note:
+        This standalone function is for algorithmic verification in unit tests only.
+        The active `PyTorchRunner` inference path executes through `QServeKVCache` /
+        `QServeKVLayer`, which applies SmoothAttention cache-side without modifying Queries.
 
     Returns:
         Tuple of `(attn_output, attn_weights)`
@@ -227,13 +247,17 @@ def compute_gqa_qserve_attention(
     # 1. SmoothAttention outlier suppression
     q_smooth, k_smooth = compute_smooth_attention_scales(query, key, alpha=alpha)
 
-    # 2. INT4 Quantization and Packing
-    k_packed, k_scales = quantize_kv_int4(k_smooth, group_size=group_size)
-    v_packed, v_scales = quantize_kv_int4(value, group_size=group_size)
+    # 2. Asymmetric UINT4 Quantization and Packing
+    k_packed, k_scales, k_zeros = quantize_kv_uint4(k_smooth, group_size=group_size)
+    v_packed, v_scales, v_zeros = quantize_kv_uint4(value, group_size=group_size)
 
     # 3. Dequantization back to original floating-point precision
-    k_dequant = dequantize_kv_int4(k_packed, k_scales, original_dtype=key.dtype, group_size=group_size)
-    v_dequant = dequantize_kv_int4(v_packed, v_scales, original_dtype=value.dtype, group_size=group_size)
+    k_dequant = dequantize_kv_uint4(
+        k_packed, k_scales, k_zeros, original_dtype=key.dtype, group_size=group_size
+    )
+    v_dequant = dequantize_kv_uint4(
+        v_packed, v_scales, v_zeros, original_dtype=value.dtype, group_size=group_size
+    )
 
     # 4. GQA Attention Forward
     num_q_heads = q_smooth.size(1)
@@ -258,15 +282,15 @@ def compute_gqa_qserve_attention(
 
 @register("qserve_kv4")
 class QServeKV4Technique(Technique):
-    """QServe KV4: SmoothAttention outlier suppression + 4-bit KV Cache quantization.
+    """QServe KV4: SmoothAttention outlier suppression + 4-bit asymmetric UINT4 KV Cache quantization.
 
     Suppresses Key activation outliers by migrating dynamic range between Query
     and Key channels (SmoothAttention), then quantizes both Key and Value tensors
-    to 4-bit integer (INT4) representation. Compresses KV-cache memory footprint
-    by 4x relative to BF16/FP16 without modifying base model weights.
+    to asymmetric 4-bit unsigned integer (UINT4 [0, 15]) representation with
+    per-group scale and zero-point without modifying base model weights.
 
     Axes:
-        Axis.STRUCTURAL: Compresses the numerical precision of the KV cache from BF16 to INT4.
+        Axis.STRUCTURAL: Compresses the numerical precision of the KV cache from BF16 to UINT4.
     """
 
     axes = Axis.STRUCTURAL

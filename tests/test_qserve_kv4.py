@@ -15,10 +15,10 @@ from src.techniques.qserve_cache import (
 from src.techniques.qserve_kv4 import (
     compute_gqa_qserve_attention,
     compute_smooth_attention_scales,
-    dequantize_kv_int4,
-    pack_int4,
-    quantize_kv_int4,
-    unpack_int4,
+    dequantize_kv_uint4,
+    pack_uint4,
+    quantize_kv_uint4,
+    unpack_uint4,
 )
 
 
@@ -89,33 +89,61 @@ class TestQServeKV4Technique(unittest.TestCase):
         smooth_max = k_smooth[:, :, :, 5].abs().max().item()
         self.assertLess(smooth_max, orig_max * 0.5)
 
-    def test_pack_and_unpack_int4(self):
-        """Verify lossless bit packing and unpacking of INT4 values in [-8, 7]."""
-        values = torch.tensor([-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int8)
-        packed = pack_int4(values)
+    def test_pack_and_unpack_uint4(self):
+        """Verify lossless bit packing/unpacking of UINT4 values in [0, 15] and clamping safety."""
+        values = torch.arange(16, dtype=torch.uint8)
+        packed = pack_uint4(values)
         self.assertEqual(packed.dtype, torch.uint8)
         self.assertEqual(packed.numel(), len(values) // 2)
 
-        unpacked = unpack_int4(packed, original_dim=len(values))
+        unpacked = unpack_uint4(packed)
+        self.assertEqual(unpacked.dtype, torch.uint8)
         self.assertTrue(torch.equal(values, unpacked))
 
-    def test_quantize_and_dequantize_kv_int4_fidelity(self):
-        """Verify 4-bit quantization compresses memory by 4x and retains >0.99 cosine similarity."""
+        # Out-of-range values must clamp to [0, 15] without corrupting adjacent nibbles
+        oob = torch.tensor([-5, 25, 0, 15], dtype=torch.int16)
+        unpacked_oob = unpack_uint4(pack_uint4(oob))
+        self.assertTrue(torch.equal(unpacked_oob, torch.tensor([0, 15, 0, 15], dtype=torch.uint8)))
+
+    def test_quantize_and_dequantize_kv_uint4_fidelity(self):
+        """Verify asymmetric UINT4 quantization fidelity on zero-centered, shifted, flat, and zero tensors."""
         torch.manual_seed(42)
         shape = (2, 8, 64, 128)
-        tensor = torch.randn(shape, dtype=torch.float32)
+        tensor = torch.randn(shape, dtype=torch.bfloat16)
 
-        packed, scales = quantize_kv_int4(tensor, group_size=32)
+        packed, scales, zeros = quantize_kv_uint4(tensor, group_size=32)
         self.assertEqual(packed.shape, (2, 8, 64, 64))
         self.assertEqual(packed.dtype, torch.uint8)
         self.assertEqual(scales.shape, (2, 8, 64, 4, 1))
+        self.assertEqual(zeros.shape, (2, 8, 64, 4, 1))
+        self.assertEqual(scales.dtype, torch.bfloat16)
+        self.assertEqual(zeros.dtype, torch.bfloat16)
 
-        dequant = dequantize_kv_int4(packed, scales, original_dtype=torch.float32, group_size=32)
+        dequant = dequantize_kv_uint4(packed, scales, zeros, original_dtype=torch.bfloat16, group_size=32)
         self.assertEqual(dequant.shape, shape)
-        self.assertEqual(dequant.dtype, torch.float32)
+        self.assertEqual(dequant.dtype, torch.bfloat16)
 
-        cos_sim = F.cosine_similarity(tensor.flatten(), dequant.flatten(), dim=0).item()
+        cos_sim = F.cosine_similarity(tensor.float().flatten(), dequant.float().flatten(), dim=0).item()
         self.assertGreater(cos_sim, 0.99)
+
+        # Non-zero-centered / shifted distribution where asymmetric zero_point matters
+        shifted = tensor + 5.0
+        s_packed, s_scales, s_zeros = quantize_kv_uint4(shifted, group_size=32)
+        s_dequant = dequantize_kv_uint4(
+            s_packed, s_scales, s_zeros, original_dtype=torch.bfloat16, group_size=32
+        )
+        shifted_cos = F.cosine_similarity(
+            shifted.float().flatten(), s_dequant.float().flatten(), dim=0
+        ).item()
+        self.assertGreater(shifted_cos, 0.99)
+
+        # Constant / flat and all-zero tensors must not produce NaN or Inf
+        for edge in (torch.full(shape, 3.25, dtype=torch.bfloat16), torch.zeros(shape, dtype=torch.bfloat16)):
+            e_p, e_s, e_z = quantize_kv_uint4(edge, group_size=32)
+            e_dq = dequantize_kv_uint4(e_p, e_s, e_z, original_dtype=torch.bfloat16, group_size=32)
+            self.assertFalse(torch.isnan(e_dq).any().item())
+            self.assertFalse(torch.isinf(e_dq).any().item())
+            self.assertTrue(torch.allclose(e_dq.float(), edge.float(), atol=1e-2))
 
     def test_gqa_qserve_attention_end_to_end(self):
         """Verify full forward attention pass with QServe SmoothAttention + INT4 KV cache."""
@@ -180,8 +208,10 @@ class TestQServeKV4Technique(unittest.TestCase):
         self.assertEqual(layer.get_seq_length(), 33)
         self.assertEqual(layer.original_positions, list(range(33)))
 
-        # Verify physical quantized footprint is significantly smaller than BF16
+        # Verify exact physical quantized footprint (64B packed + 8B scales + 8B zeros per K/V token/head)
         bf16_bytes = 2 * batch * heads * 33 * dim * 2
+        expected_quantized_bytes = batch * heads * 33 * 160
+        self.assertEqual(layer.quantized_bytes, expected_quantized_bytes)
         self.assertLess(layer.quantized_bytes, bf16_bytes * 0.4)
 
         # Verify high cosine fidelity
