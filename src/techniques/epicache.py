@@ -37,10 +37,11 @@ def compute_layer_sensitivity_budgets(
         sensitivities.append(sens ** alpha)
 
     total_sens = sum(sensitivities)
+    min_budget = min(64, max(1, base_budget_per_layer // 4))
     budgets: dict[int, int] = {}
     for l in range(total_layers):
         allocated = int(round((sensitivities[l] / total_sens) * total_tokens))
-        budgets[l] = max(64, allocated)
+        budgets[l] = max(min_budget, allocated)
 
     return budgets
 
@@ -67,14 +68,49 @@ def route_query_to_episode(
     return int(torch.argmax(sims).item())
 
 
+def _compute_query_key_max_scores(
+    query: "torch.Tensor",
+    key: "torch.Tensor",
+) -> "torch.Tensor":
+    """Compute GQA-pooled max attention score per KV token (epicache.md Eq. 3)."""
+    batch, num_q_heads, q_len, head_dim = query.shape
+    num_kv_heads = key.shape[1]
+    kv_len = key.shape[2]
+    group_size = max(1, num_q_heads // max(num_kv_heads, 1))
+
+    if group_size > 1 and num_q_heads % num_kv_heads == 0:
+        k_rep = key.repeat_interleave(group_size, dim=1)
+    else:
+        k_rep = key
+
+    scores = torch.matmul(query.float(), k_rep.float().transpose(-2, -1)) * (head_dim ** -0.5)
+    if q_len > 1 and kv_len >= q_len:
+        past_len = kv_len - q_len
+        q_idx = torch.arange(q_len, device=query.device).unsqueeze(-1) + past_len
+        kv_idx = torch.arange(kv_len, device=query.device).unsqueeze(0)
+        mask = kv_idx <= q_idx
+        scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+    attn = F.softmax(scores, dim=-1)
+    if num_q_heads % num_kv_heads == 0:
+        attn_grouped = attn.view(batch, num_kv_heads, group_size, q_len, kv_len).mean(dim=2)
+    else:
+        attn_grouped = attn
+    return attn_grouped.amax(dim=2)
+
+
 def evict_block_prefill(
     k_block: "torch.Tensor",
     v_block: "torch.Tensor",
     budget: int,
+    attn_scores: "torch.Tensor | None" = None,
+    query: "torch.Tensor | None" = None,
 ) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
     """Perform block-wise token eviction during prefill to cap peak GPU memory.
 
-    Retains the attention sink (token 0) and the top tokens ranked by L2 Key magnitude.
+    Retains the attention sink (token 0) and the top tokens ranked by attention-guided
+    max-attention importance (when ``attn_scores`` or ``query`` is provided), falling back
+    to L2 Key magnitude when no query/attention context is available.
 
     Returns:
         Tuple of (k_retained, v_retained, retained_indices).
@@ -87,9 +123,18 @@ def evict_block_prefill(
         indices = torch.arange(seq_len, device=k_block.device)
         return k_block, v_block, indices
 
-    key_scores = k_block.float().norm(p=2, dim=-1).mean(dim=(0, 1))
+    if attn_scores is not None and attn_scores.shape[-1] == seq_len:
+        token_scores = attn_scores.float()
+        if token_scores.ndim > 1:
+            token_scores = token_scores.mean(dim=tuple(range(token_scores.ndim - 1)))
+    elif query is not None and F is not None:
+        q_scores = _compute_query_key_max_scores(query, k_block)
+        token_scores = q_scores.mean(dim=(0, 1))
+    else:
+        token_scores = k_block.float().norm(p=2, dim=-1).mean(dim=(0, 1))
+
     k_top = max(1, budget - 1)
-    _, top_idx = torch.topk(key_scores[1:], k=min(k_top, seq_len - 1))
+    _, top_idx = torch.topk(token_scores[1:], k=min(k_top, seq_len - 1))
     top_idx = top_idx + 1
     retained_idx = torch.unique(torch.cat([torch.tensor([0], device=top_idx.device), top_idx]))
 
@@ -116,7 +161,9 @@ def compute_gqa_epicache_attention(
     d = query.size(-1)
     orig_seq_len = key.size(-2)
 
-    k_active, v_active, retained_idx = evict_block_prefill(key, value, budget=budget)
+    k_active, v_active, retained_idx = evict_block_prefill(
+        key, value, budget=budget, query=query
+    )
 
     num_q_heads = query.size(1)
     num_kv_heads = key.size(1)
@@ -141,9 +188,101 @@ def compute_gqa_epicache_attention(
         "original_tokens": int(orig_seq_len),
         "sparsity_ratio": float(sparsity_ratio),
         "block_prefill_capped": True,
+        "scoring_mode": "attention_guided",
     }
 
     return attn_output, attn_weights, telemetry
+
+
+_PYTORCH_HOOKS_INSTALLED: bool = False
+_ORIG_SDPA: Any = None
+
+
+def _align_attention_mask(
+    mask: "torch.Tensor | None",
+    q_len: int,
+    kv_len: int,
+) -> "torch.Tensor | None":
+    """Align 4D causal attention_mask to a layer's retained KV length under per-layer budgets."""
+    if mask is None or torch is None:
+        return mask
+    mask_kv_len = mask.shape[-1]
+    if mask_kv_len == kv_len:
+        return mask
+    if mask_kv_len > kv_len:
+        past_needed = kv_len - q_len
+        if past_needed > 0:
+            return torch.cat([mask[..., :past_needed], mask[..., -q_len:]], dim=-1)
+        return mask[..., -kv_len:]
+    pad_len = kv_len - mask_kv_len
+    pad = torch.zeros((*mask.shape[:-1], pad_len), device=mask.device, dtype=mask.dtype)
+    return torch.cat([pad, mask], dim=-1)
+
+
+def _install_pytorch_epicache_hooks() -> None:
+    """Install SDPA attention wrapper to capture query-informed scores and align per-layer masks."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if _PYTORCH_HOOKS_INSTALLED:
+        return
+
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        from src.techniques.epicache_cache import (
+            get_active_epicache_cache,
+            record_epicache_attention_scores,
+        )
+    except ImportError:
+        return
+
+    orig_sdpa = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+    if orig_sdpa is None:
+        return
+
+    _ORIG_SDPA = orig_sdpa
+
+    def epicache_sdpa_attention_forward(module, query, key, value, *args, **kwargs):
+        cache = get_active_epicache_cache()
+        if cache is not None and getattr(cache, "is_epicache", False):
+            kv_len = key.shape[-2]
+            q_len = query.shape[-2]
+            if args:
+                aligned_mask = _align_attention_mask(args[0], q_len=q_len, kv_len=kv_len)
+                if aligned_mask is not args[0]:
+                    args = (aligned_mask,) + args[1:]
+            elif "attention_mask" in kwargs:
+                aligned_mask = _align_attention_mask(
+                    kwargs["attention_mask"], q_len=q_len, kv_len=kv_len
+                )
+                if aligned_mask is not kwargs["attention_mask"]:
+                    kwargs["attention_mask"] = aligned_mask
+
+        output, attn_weights = _ORIG_SDPA(module, query, key, value, *args, **kwargs)
+
+        if cache is not None and getattr(cache, "is_epicache", False):
+            layer_idx = getattr(module, "layer_idx", None)
+            if layer_idx is not None and layer_idx < len(cache.layers):
+                record_epicache_attention_scores(cache.layers[layer_idx], query, key)
+                cache.sync_telemetry()
+
+        return output, attn_weights
+
+    ALL_ATTENTION_FUNCTIONS.register("sdpa", epicache_sdpa_attention_forward)
+    _PYTORCH_HOOKS_INSTALLED = True
+
+
+def _uninstall_pytorch_epicache_hooks() -> None:
+    """Restore original sdpa attention forward in transformers ALL_ATTENTION_FUNCTIONS."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if not _PYTORCH_HOOKS_INSTALLED or _ORIG_SDPA is None:
+        return
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        ALL_ATTENTION_FUNCTIONS.register("sdpa", _ORIG_SDPA)
+        _PYTORCH_HOOKS_INSTALLED = False
+        _ORIG_SDPA = None
+    except ImportError:
+        pass
 
 
 @register("epicache")
@@ -184,6 +323,32 @@ class EpiCacheTechnique(Technique):
         self.episode_budget_tokens = int(episode_budget_tokens)
         self.layer_sensitivity_alpha = float(layer_sensitivity_alpha)
         self.block_size = int(block_size)
+        self._last_run_telemetry: dict[str, Any] = self._empty_telemetry()
+
+    @staticmethod
+    def _empty_telemetry() -> dict[str, Any]:
+        return {
+            "active_retained_tokens": 0,
+            "total_retained_tokens_all_layers": 0,
+            "layer_0_retained_tokens": 0,
+            "num_layers_observed": 0,
+            "total_tokens_seen": 0,
+            "total_pruned_tokens": 0,
+            "attention_guided_steps": 0,
+            "eviction_scoring_mode": "uninitialized",
+            "block_wise_prefill_active": False,
+            "per_layer_sensitivity_active": False,
+            "episodic_routing_active": False,
+            "executed_episodes": 0,
+        }
+
+    def setup(self) -> None:
+        """Reset run-level telemetry and install PyTorch SDPA hooks."""
+        from src.techniques.epicache_cache import set_active_epicache_cache
+
+        set_active_epicache_cache(None)
+        self._last_run_telemetry = self._empty_telemetry()
+        _install_pytorch_epicache_hooks()
 
     @property
     def compression_ratio(self) -> float:
@@ -206,8 +371,10 @@ class EpiCacheTechnique(Technique):
         from src.techniques.epicache_cache import EpiCacheCache
 
         return lambda: EpiCacheCache(
+            total_layers=None,
             episode_budget_tokens=self.episode_budget_tokens,
             layer_sensitivity_alpha=self.layer_sensitivity_alpha,
+            telemetry_sink=self._last_run_telemetry,
         )
 
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
@@ -215,15 +382,31 @@ class EpiCacheTechnique(Technique):
         from src.techniques.epicache_cache import get_active_epicache_cache
 
         active_cache = get_active_epicache_cache()
-        retained_tokens = active_cache.get_seq_length(0) if active_cache is not None else 0
+        if active_cache is not None:
+            telemetry = active_cache.snapshot_telemetry()
+        else:
+            telemetry = dict(self._last_run_telemetry)
 
         return {
-            "num_episodes": self.num_episodes,
+            "configured_num_episodes": self.num_episodes,
+            "executed_episodes": telemetry.get("executed_episodes", 0),
             "episode_budget_tokens": self.episode_budget_tokens,
             "layer_sensitivity_alpha": self.layer_sensitivity_alpha,
             "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
-            "active_retained_tokens": retained_tokens,
-            "block_wise_prefill_active": True,
-            "episodic_routing_active": True,
+            "active_retained_tokens": telemetry.get("active_retained_tokens", 0),
+            "total_retained_tokens_all_layers": telemetry.get(
+                "total_retained_tokens_all_layers", 0
+            ),
+            "layer_0_retained_tokens": telemetry.get("layer_0_retained_tokens", 0),
+            "num_layers_observed": telemetry.get("num_layers_observed", 0),
+            "total_tokens_seen": telemetry.get("total_tokens_seen", 0),
+            "total_pruned_tokens": telemetry.get("total_pruned_tokens", 0),
+            "attention_guided_steps": telemetry.get("attention_guided_steps", 0),
+            "eviction_scoring_mode": telemetry.get("eviction_scoring_mode", "uninitialized"),
+            "block_wise_prefill_active": telemetry.get("block_wise_prefill_active", False),
+            "per_layer_sensitivity_active": telemetry.get(
+                "per_layer_sensitivity_active", False
+            ),
+            "episodic_routing_active": telemetry.get("episodic_routing_active", False),
         }

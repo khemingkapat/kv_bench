@@ -9,6 +9,7 @@ from src.core.pytorch_runner import PyTorchRunner
 from src.core.registry import get_technique, list_techniques
 from src.techniques.epicache import (
     EpiCacheTechnique,
+    _uninstall_pytorch_epicache_hooks,
     compute_gqa_epicache_attention,
     compute_layer_sensitivity_budgets,
     evict_block_prefill,
@@ -18,6 +19,7 @@ from src.techniques.epicache_cache import (
     EpiCacheCache,
     EpiCacheLayer,
     get_active_epicache_cache,
+    record_epicache_attention_scores,
 )
 
 
@@ -38,9 +40,11 @@ class TestEpiCacheTechnique(unittest.TestCase):
 
         mock_out = SimpleNamespace(prompt_tokens=4096, generated_tokens=64)
         metrics = technique.extra_metrics(None, mock_out)
-        self.assertEqual(metrics["num_episodes"], 4)
-        self.assertTrue(metrics["block_wise_prefill_active"])
-        self.assertTrue(metrics["episodic_routing_active"])
+        self.assertEqual(metrics["configured_num_episodes"], 4)
+        self.assertEqual(metrics["executed_episodes"], 0)
+        self.assertFalse(metrics["block_wise_prefill_active"])
+        self.assertFalse(metrics["episodic_routing_active"])
+        self.assertEqual(metrics["eviction_scoring_mode"], "uninitialized")
 
         kwargs = technique.engine_kwargs(context_length=8192, max_tokens=128)
         self.assertEqual(kwargs["block_size"], 16)
@@ -103,6 +107,41 @@ class TestEpiCacheTechnique(unittest.TestCase):
         self.assertTrue(torch.allclose(attn_weights.sum(dim=-1), torch.ones_like(attn_weights.sum(dim=-1)), atol=1e-4))
         self.assertEqual(telemetry["active_tokens"], 16)
         self.assertTrue(telemetry["block_prefill_capped"])
+        self.assertEqual(telemetry["scoring_mode"], "attention_guided")
+
+    def test_attention_guided_eviction_prefers_high_attention_over_key_norm(self):
+        batch, heads, seq_len, dim = 1, 2, 16, 8
+        budget = 4
+
+        k = torch.ones(batch, heads, seq_len, dim) * 0.1
+        v = torch.randn(batch, heads, seq_len, dim)
+        # Token 5 has huge L2 key norm, but zero attention score
+        k[:, :, 5, :] = 100.0
+        # Tokens 2, 7, 11 have small key norms, but high attention scores
+        attn_scores = torch.zeros(batch, heads, seq_len)
+        attn_scores[:, :, 2] = 0.9
+        attn_scores[:, :, 7] = 0.8
+        attn_scores[:, :, 11] = 0.7
+
+        _, _, retained_idx = evict_block_prefill(k, v, budget=budget, attn_scores=attn_scores)
+        retained = retained_idx.tolist()
+        self.assertEqual(retained, [0, 2, 7, 11])
+        self.assertNotIn(5, retained)
+
+    def test_record_attention_scores_single_token_kv_len(self):
+        layer = EpiCacheLayer(layer_idx=0, total_layers=4, episode_budget_tokens=16)
+        k1 = torch.randn(1, 2, 1, 8)
+        v1 = torch.randn(1, 2, 1, 8)
+        layer.update(k1, v1)
+        q1 = torch.randn(1, 4, 1, 8)
+        record_epicache_attention_scores(layer, q1, k1)
+        self.assertEqual(layer.importance_scores.shape, (1, 2, 1))
+
+        # Subsequent decode token must concatenate cleanly without ndim mismatch
+        k2 = torch.randn(1, 2, 1, 8)
+        v2 = torch.randn(1, 2, 1, 8)
+        layer.update(k2, v2)
+        self.assertEqual(layer.importance_scores.shape, (1, 2, 2))
 
     def test_epicache_layer_chunk_pruning_and_decode(self):
         torch.manual_seed(123)
@@ -115,14 +154,16 @@ class TestEpiCacheTechnique(unittest.TestCase):
 
         cache.update(k_chunk, v_chunk, layer_idx=0)
         cache.prune_after_chunk()
-        self.assertEqual(cache.get_seq_length(0), 16)
+        expected_l0_budget = cache.layers[0].layer_budget
+        self.assertEqual(expected_l0_budget, cache.layers[0].sensitivity_budget)
+        self.assertEqual(cache.get_seq_length(0), expected_l0_budget)
         self.assertIn(0, cache.original_positions)
 
-        # Decode 1 token beyond budget -> automatically re-prunes to budget 16
+        # Decode 1 token beyond budget -> automatically re-prunes to layer_budget
         k_dec = torch.randn(batch, heads, 1, dim, dtype=torch.bfloat16)
         v_dec = torch.randn(batch, heads, 1, dim, dtype=torch.bfloat16)
         out_k, _ = cache.update(k_dec, v_dec, layer_idx=0)
-        self.assertEqual(out_k.shape[-2], 16)
+        self.assertEqual(out_k.shape[-2], expected_l0_budget)
 
     def test_epicache_factory_diagnostic_and_pytorch_runner(self):
         technique = get_technique("epicache", episode_budget_tokens=16)
@@ -170,36 +211,61 @@ class TestEpiCacheTechnique(unittest.TestCase):
             num_key_value_heads=2,
             head_dim=32,
         )
-        for dtype in (torch.float32, torch.bfloat16):
-            model = Qwen3ForCausalLM(cfg).to(dtype=dtype).eval()
-            cache = EpiCacheCache(
-                total_layers=6, episode_budget_tokens=128, layer_sensitivity_alpha=2.0
-            )
-            with torch.no_grad():
-                model(
-                    input_ids=torch.randint(0, 256, (1, 128)),
-                    position_ids=torch.arange(0, 128).unsqueeze(0),
-                    past_key_values=cache,
-                    use_cache=True,
-                )
-                cache.prune_after_chunk()
-                out2 = model(
-                    input_ids=torch.randint(0, 256, (1, 96)),
-                    position_ids=torch.arange(128, 224).unsqueeze(0),
-                    past_key_values=cache,
-                    use_cache=True,
-                )
-                cache.prune_after_chunk()
-                next_tok = out2.logits[:, -1:, :].argmax(dim=-1)
-                out3 = model(
-                    input_ids=next_tok,
-                    position_ids=torch.tensor([[224]]),
-                    past_key_values=cache,
-                    use_cache=True,
-                )
-            self.assertEqual(cache.get_seq_length(0), 128)
-            self.assertEqual(len(cache.original_positions), 128)
-            self.assertEqual(out3.logits.shape, (1, 1, 256))
+        technique = get_technique("epicache", episode_budget_tokens=64, layer_sensitivity_alpha=2.0)
+        technique.setup()
+        try:
+            for dtype in (torch.float32, torch.bfloat16):
+                technique.setup()
+                model = Qwen3ForCausalLM(cfg).to(dtype=dtype).eval()
+                cache = technique.pytorch_cache_factory()()
+                with torch.no_grad():
+                    model(
+                        input_ids=torch.randint(0, 256, (1, 160)),
+                        position_ids=torch.arange(0, 160).unsqueeze(0),
+                        past_key_values=cache,
+                        use_cache=True,
+                    )
+                    cache.prune_after_chunk()
+                    out2 = model(
+                        input_ids=torch.randint(0, 256, (1, 96)),
+                        position_ids=torch.arange(160, 256).unsqueeze(0),
+                        past_key_values=cache,
+                        use_cache=True,
+                    )
+                    cache.prune_after_chunk()
+                    next_tok = out2.logits[:, -1:, :].argmax(dim=-1)
+                    out3 = model(
+                        input_ids=next_tok,
+                        position_ids=torch.tensor([[256]]),
+                        past_key_values=cache,
+                        use_cache=True,
+                    )
+                seq_lens = [cache.get_seq_length(i) for i in range(6)]
+                # Edge layers (0, 5) have larger sensitivity budgets than middle layers (2, 3)
+                self.assertGreater(seq_lens[0], seq_lens[2])
+                self.assertGreater(seq_lens[5], seq_lens[3])
+                self.assertEqual(len(cache.original_positions), seq_lens[0])
+                self.assertEqual(out3.logits.shape, (1, 1, 256))
+
+                # Verify telemetry persistence after cache deletion (simulating PyTorchRunner cleanup)
+                del cache
+                metrics = technique.extra_metrics(None, None)
+                self.assertGreater(metrics["active_retained_tokens"], 0)
+                self.assertGreater(metrics["attention_guided_steps"], 0)
+                self.assertEqual(metrics["eviction_scoring_mode"], "attention_guided")
+                self.assertTrue(metrics["per_layer_sensitivity_active"])
+                self.assertTrue(metrics["block_wise_prefill_active"])
+                self.assertFalse(metrics["episodic_routing_active"])
+                self.assertEqual(metrics["executed_episodes"], 1)
+
+                # Verify setup() resets run-level telemetry
+                technique.setup()
+                reset_metrics = technique.extra_metrics(None, None)
+                self.assertEqual(reset_metrics["active_retained_tokens"], 0)
+                self.assertEqual(reset_metrics["attention_guided_steps"], 0)
+                self.assertEqual(reset_metrics["eviction_scoring_mode"], "uninitialized")
+        finally:
+            _uninstall_pytorch_epicache_hooks()
 
 
 if __name__ == "__main__":
