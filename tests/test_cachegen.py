@@ -1,9 +1,11 @@
+import gc
 import unittest
 from types import SimpleNamespace
 
 import torch
 
 from src.core.axis import Axis
+from src.core.config import get_model_spec
 from src.core.diagnostic import inspect_sample_diagnostic
 from src.core.pytorch_runner import PyTorchRunner
 from src.core.registry import get_technique, list_techniques
@@ -45,7 +47,7 @@ class TestCacheGenTechnique(unittest.TestCase):
 
         kwargs = technique.engine_kwargs(context_length=4096, max_tokens=128)
         self.assertEqual(kwargs["block_size"], 16)
-        self.assertEqual(kwargs["kv_cache_dtype"], "fp8")
+        self.assertEqual(kwargs["kv_cache_dtype"], "auto")
         self.assertEqual(kwargs["swap_space"], 4)
 
     def test_invalid_parameters_rejected(self):
@@ -161,6 +163,64 @@ class TestCacheGenTechnique(unittest.TestCase):
         outputs = runner.generate(["Test CacheGen prompt."], max_tokens=16)
         self.assertEqual(len(outputs), 1)
         self.assertEqual(len(outputs[0].outputs[0].token_ids), 16)
+
+    def test_telemetry_persists_after_cache_deletion_and_resets_in_setup(self):
+        technique = CacheGenTechnique()
+        technique.setup()
+        mock_out = SimpleNamespace(prompt_tokens=64, generated_tokens=16)
+        self.assertEqual(technique.extra_metrics(None, mock_out)["compressed_bitstream_bytes"], 0)
+
+        cache = technique.pytorch_cache_factory()()
+        k1 = torch.randn(1, 8, 25, 64, dtype=torch.float32)
+        v1 = torch.randn(1, 8, 25, 64, dtype=torch.float32)
+        cache.update(k1, v1, layer_idx=0)
+        expected_bytes = cache.total_compressed_bytes
+        self.assertGreater(expected_bytes, 0)
+
+        # Simulate PyTorchRunner.generate() freeing cache before extra_metrics()
+        del cache
+        gc.collect()
+        self.assertIsNone(get_active_cachegen_cache())
+        self.assertEqual(
+            technique.extra_metrics(None, mock_out)["compressed_bitstream_bytes"],
+            expected_bytes,
+        )
+
+        # setup() must clear stale telemetry before the next run
+        technique.setup()
+        self.assertEqual(technique.extra_metrics(None, mock_out)["compressed_bitstream_bytes"], 0)
+
+    def test_two_bit_full_four_level_utilization_and_exact_zero(self):
+        # Asymmetric span [-2.0, 1.0] plus exact 0.0 must utilize all 4 levels {-2, -1, 0, 1}
+        deltas = torch.tensor([[[[-2.0, -1.0, 0.0, 1.0]]]], dtype=torch.float32)
+        q, scale, dequant, bits = quantize_deltas_tiered(
+            deltas, layer_idx=25, total_layers=30, deep_bits=2
+        )
+        self.assertEqual(bits, 2)
+        self.assertEqual(set(q.flatten().tolist()), {-2.0, -1.0, 0.0, 1.0})
+        self.assertTrue(torch.allclose(dequant, deltas, atol=1e-6))
+        self.assertEqual(dequant[..., 2].item(), 0.0)
+
+        # Verify bit-packed CacheGenLayer roundtrip preserves all 4 levels
+        layer = CacheGenLayer(layer_idx=25, total_layers=30, deep_bits=2)
+        layer.head_dim = 4
+        layer.pack_bits, _, _ = layer._packing_spec(4)
+        layer.target_dtype = torch.float32
+        packed, p_scale = layer._pack_quantized(deltas)
+        unpacked = layer._unpack_quantized(packed) * p_scale
+        self.assertTrue(torch.allclose(unpacked, deltas, atol=1e-6))
+
+    def test_configure_model_sets_total_layers_for_dense_and_hybrid(self):
+        technique = CacheGenTechnique()
+        technique.configure_model(get_model_spec("qwen3-1.7b"))
+        self.assertEqual(technique.total_layers, 28)
+        cache_17b = technique.pytorch_cache_factory()()
+        self.assertEqual(cache_17b.total_layers, 28)
+
+        technique.configure_model(get_model_spec("qwen3.5-4b"))
+        self.assertEqual(technique.total_layers, 8)
+        cache_hybrid = technique.pytorch_cache_factory()()
+        self.assertEqual(cache_hybrid.total_layers, 8)
 
 
 if __name__ == "__main__":

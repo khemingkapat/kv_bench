@@ -23,7 +23,7 @@ except ImportError:
     torch = None
 
 from .axis import axis_names
-from .config import resolve_model_target
+from .config import get_model_spec, resolve_model_target
 from .metrics import (
     ResultEntry,
     format_metrics_summary,
@@ -184,6 +184,7 @@ def run_benchmark(
             print(f"Hardware VRAM: {total_mem_gb:.1f} GB -> Capped to {max_vram_gb:.1f} GB (allocator cap: {cap_fraction:.3f}, vLLM utilization: {effective_utilization})")
 
     target_model, model_revision, model_extra_args = resolve_model_target(model)
+    technique.configure_model(get_model_spec(model))
     extra_model_kwargs = _parse_extra_vllm_args(model_extra_args)
 
     print(f"=== {technique.name} [engine: {engine}] :: axes={axes} ===")

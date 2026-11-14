@@ -107,11 +107,9 @@ def quantize_deltas_tiered(
     else:
         bits = deep_bits
 
-    max_val = (1 << (bits - 1)) - 1
-    min_val = -(1 << (bits - 1))
+    from src.techniques.cachegen_cache import quantize_mid_tread
 
-    scale = deltas.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6) / float(max_val)
-    q = torch.round(deltas / scale).clamp(min_val, max_val)
+    q, scale = quantize_mid_tread(deltas, bits)
     dequant = q.to(deltas.dtype) * scale.to(deltas.dtype)
 
     return q, scale, dequant, bits
@@ -203,6 +201,7 @@ class CacheGenTechnique(Technique):
         mid_bits: int = 4,
         deep_bits: int = 2,
         block_size: int = 16,
+        total_layers: int = 36,
     ):
         if int(anchor_group_size) <= 0:
             raise ValueError(f"anchor_group_size must be positive, got {anchor_group_size}")
@@ -210,16 +209,32 @@ class CacheGenTechnique(Technique):
             raise ValueError("All bitwidth parameters must be positive integers")
         if int(block_size) <= 0:
             raise ValueError(f"block_size must be positive, got {block_size}")
+        if int(total_layers) <= 0:
+            raise ValueError(f"total_layers must be positive, got {total_layers}")
 
         self.anchor_group_size = int(anchor_group_size)
         self.shallow_bits = int(shallow_bits)
         self.mid_bits = int(mid_bits)
         self.deep_bits = int(deep_bits)
         self.block_size = int(block_size)
+        self.total_layers = int(total_layers)
+
+    def configure_model(self, spec: Any) -> None:
+        if spec is not None and getattr(spec, "num_full_attn_layers", 0) > 0:
+            self.total_layers = int(spec.num_full_attn_layers)
+
+    def setup(self) -> None:
+        from src.techniques.cachegen_cache import (
+            reset_cachegen_telemetry,
+            set_active_cachegen_cache,
+        )
+
+        set_active_cachegen_cache(None)
+        reset_cachegen_telemetry()
 
     @property
     def compression_ratio(self) -> float:
-        """Average compression ratio across all layer tiers relative to 16-bit FP16."""
+        """Nominal tier-average delta compression ratio relative to 16-bit FP16."""
         mean_bits = (self.shallow_bits + self.mid_bits + self.deep_bits) / 3.0
         return round(16.0 / mean_bits, 2)
 
@@ -228,7 +243,7 @@ class CacheGenTechnique(Technique):
         del context_length, max_tokens
         return {
             "block_size": self.block_size,
-            "kv_cache_dtype": "fp8",
+            "kv_cache_dtype": "auto",
             "swap_space": 4,
         }
 
@@ -239,6 +254,7 @@ class CacheGenTechnique(Technique):
         from src.techniques.cachegen_cache import CacheGenCache
 
         return lambda: CacheGenCache(
+            total_layers=self.total_layers,
             anchor_group_size=self.anchor_group_size,
             shallow_bits=self.shallow_bits,
             mid_bits=self.mid_bits,
@@ -247,17 +263,23 @@ class CacheGenTechnique(Technique):
 
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm, workload_output
-        from src.techniques.cachegen_cache import get_active_cachegen_cache
+        from src.techniques.cachegen_cache import (
+            get_active_cachegen_cache,
+            get_last_compressed_bytes,
+        )
 
         active_cache = get_active_cachegen_cache()
         compressed_bytes = (
-            active_cache.total_compressed_bytes if active_cache is not None else 0
+            active_cache.total_compressed_bytes
+            if active_cache is not None
+            else get_last_compressed_bytes()
         )
         return {
             "anchor_group_size": self.anchor_group_size,
             "shallow_bits": self.shallow_bits,
             "mid_bits": self.mid_bits,
             "deep_bits": self.deep_bits,
+            "total_layers": self.total_layers,
             "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "compressed_bitstream_bytes": compressed_bytes,

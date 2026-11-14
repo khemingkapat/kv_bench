@@ -29,6 +29,10 @@ class Technique(ABC):
         the auto-import in techniques/__init__.py."""
         return None
 
+    def configure_model(self, spec: Any) -> None:
+        """Optional hook receiving the resolved ModelSpec before engine creation."""
+        return None
+
     @abstractmethod
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra kwargs merged into the vLLM LLM(...) constructor."""

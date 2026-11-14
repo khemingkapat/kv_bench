@@ -13,6 +13,29 @@ except ImportError:
 from transformers.cache_utils import Cache, DynamicLayer
 
 _ACTIVE_CACHEGEN_CACHE_REF: weakref.ReferenceType[CacheGenCache] | None = None
+_LAST_COMPRESSED_BYTES: int = 0
+
+
+def get_last_compressed_bytes() -> int:
+    """Return last recorded CacheGen compressed bitstream size in bytes."""
+    return _LAST_COMPRESSED_BYTES
+
+
+def reset_cachegen_telemetry() -> None:
+    """Reset module-level CacheGen telemetry between benchmark runs."""
+    global _LAST_COMPRESSED_BYTES
+    _LAST_COMPRESSED_BYTES = 0
+
+
+def quantize_mid_tread(deltas: "torch.Tensor", bits: int) -> tuple["torch.Tensor", "torch.Tensor"]:
+    """Quantize deltas with asymmetric-scale signed Mid-Tread (exact 0.0, all 2^b levels reachable)."""
+    max_val = (1 << (bits - 1)) - 1
+    min_val = -(1 << (bits - 1))
+    pos_scale = deltas.amax(dim=-1, keepdim=True) / float(max_val)
+    neg_scale = -deltas.amin(dim=-1, keepdim=True) / float(-min_val)
+    scale = torch.maximum(pos_scale, neg_scale).clamp(min=1e-6)
+    q = torch.round(deltas / scale).clamp(min_val, max_val)
+    return q, scale
 
 
 def get_active_cachegen_cache() -> CacheGenCache | None:
@@ -96,11 +119,7 @@ class CacheGenLayer(DynamicLayer):
 
     def _pack_quantized(self, deltas: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize delta tensor to layer tier bitwidth and bit-pack along head_dim."""
-        bits = self.effective_bits
-        max_val = (1 << (bits - 1)) - 1
-        min_val = -(1 << (bits - 1))
-        scale = deltas.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6) / float(max_val)
-        q = torch.round(deltas / scale).clamp(min_val, max_val)
+        q, scale = quantize_mid_tread(deltas, self.effective_bits)
 
         if self.pack_bits == 4:
             u = (q.to(torch.int16) + 8).to(torch.uint8).reshape(*deltas.shape[:-1], -1, 2)
@@ -321,7 +340,7 @@ class CacheGenLayer(DynamicLayer):
         g_used = math.ceil(t / self.anchor_group_size)
         batch, heads = self.k_delta_q_buf.shape[0], self.k_delta_q_buf.shape[1]
         anchor_bytes = 2 * batch * heads * g_used * self.head_dim * self.k_anchors_buf.element_size()
-        delta_bits_bytes = int(math.ceil(2 * batch * heads * t * self.head_dim * (self.effective_bits / 8.0)))
+        delta_bits_bytes = int(math.ceil(2 * batch * heads * t * self.head_dim * (self.pack_bits / 8.0)))
         scale_bytes = 2 * batch * heads * t * self.k_delta_s_buf.element_size()
         return anchor_bytes + delta_bits_bytes + scale_bytes
 
@@ -401,6 +420,15 @@ class CacheGenCache(Cache):
         if not self.layers:
             return 32768
         return self.layers[0].get_max_length()
+
+    def __del__(self) -> None:
+        global _LAST_COMPRESSED_BYTES
+        try:
+            total = self.total_compressed_bytes
+            if total > 0:
+                _LAST_COMPRESSED_BYTES = total
+        except Exception:
+            pass
 
     def __iter__(self) -> Iterator[tuple[Any, Any, Any]]:
         for layer in self.layers:
