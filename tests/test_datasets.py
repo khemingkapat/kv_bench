@@ -131,6 +131,17 @@ class TestDatasetStagingAndManifest(unittest.TestCase):
             self.assertTrue(os.path.exists(book_file))
             self.assertEqual(compute_sha256(book_file), entry["sha256"])
 
+    def _create_multitier_fixture(self) -> str:
+        fixture_path = os.path.join(self.temp_dir.name, "multitier_fixture.json")
+        samples = [
+            {"id": "s1", "task_type": "fact_recall", "context": "short " * 50, "question": "q?", "expected_answer": "a", "word_count": 50, "approx_tokens": 67, "length_tier": "short"},
+            {"id": "m1", "task_type": "fact_recall", "context": "medium " * 2500, "question": "q?", "expected_answer": "a", "word_count": 2500, "approx_tokens": 3375, "length_tier": "medium"},
+            {"id": "l1", "task_type": "fact_recall", "context": "long " * 6000, "question": "q?", "expected_answer": "a", "word_count": 6000, "approx_tokens": 8100, "length_tier": "long"},
+        ]
+        with open(fixture_path, "w", encoding="utf-8") as f:
+            json.dump(samples, f)
+        return fixture_path
+
     def test_workload_loading_from_staged_benchmark(self):
         # Test that LongMemEvalWorkload loads properly
         workload = LongMemEvalWorkload()
@@ -142,18 +153,24 @@ class TestDatasetStagingAndManifest(unittest.TestCase):
         self.assertIn("length_tier", first_sample)
 
     def test_workload_length_tier_filtering_and_selection(self):
+        from src.workloads.memory_adherence import BENCHMARK_DATASET_PATH
+        if os.path.exists(BENCHMARK_DATASET_PATH):
+            target_path = BENCHMARK_DATASET_PATH
+        else:
+            target_path = self._create_multitier_fixture()
+
         # Test explicit length_tier filtering
-        short_wl = LongMemEvalWorkload(length_tier="short")
+        short_wl = LongMemEvalWorkload(dataset_path=target_path, length_tier="short")
         self.assertTrue(all(s.get("length_tier") == "short" for s in short_wl.samples))
 
-        medium_wl = LongMemEvalWorkload(length_tier="medium")
+        medium_wl = LongMemEvalWorkload(dataset_path=target_path, length_tier="medium")
         self.assertTrue(all(s.get("length_tier") == "medium" for s in medium_wl.samples))
 
-        long_wl = LongMemEvalWorkload(length_tier="long")
+        long_wl = LongMemEvalWorkload(dataset_path=target_path, length_tier="long")
         self.assertTrue(all(s.get("length_tier") == "long" for s in long_wl.samples))
 
         # Test dynamic select_by_length
-        auto_wl = LongMemEvalWorkload(select_by_length=True)
+        auto_wl = LongMemEvalWorkload(dataset_path=target_path, select_by_length=True)
         samples_512 = auto_wl.get_active_samples(context_length=512)
         self.assertTrue(all(s.get("approx_tokens", 0) <= 1200 for s in samples_512))
 
@@ -162,6 +179,15 @@ class TestDatasetStagingAndManifest(unittest.TestCase):
 
         samples_16k = auto_wl.get_active_samples(context_length=16384)
         self.assertTrue(all(s.get("approx_tokens", 0) >= 7000 for s in samples_16k))
+
+    def test_fallback_dataset_raises_on_invalid_tier(self):
+        from src.workloads.memory_adherence import FALLBACK_DATASET_PATH
+        # Fallback dataset only contains short samples; selecting long tier or select_by_length must raise ValueError
+        with self.assertRaises(ValueError):
+            LongMemEvalWorkload(dataset_path=FALLBACK_DATASET_PATH, length_tier="long")
+
+        with self.assertRaises(ValueError):
+            LongMemEvalWorkload(dataset_path=FALLBACK_DATASET_PATH, select_by_length=True)
 
     def test_load_continuous_prefix_from_pg19(self):
         pg19_dir = os.path.join(self.data_dir, "pg19")

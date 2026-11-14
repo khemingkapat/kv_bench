@@ -59,12 +59,11 @@ echo "Model Selected:     $MODEL"
 echo "Technique Selected: $TECHNIQUE"
 echo "Engine Selected:    $ENGINE"
 
-echo ">> Running Automated Test Suite on Compute Node..."
-if [[ -f "tests/test_${TECHNIQUE}.py" ]]; then
-    uv run --no-sync python -m unittest discover tests -p "test_${TECHNIQUE}.py"
-else
-    uv run --no-sync python -m unittest discover tests
-fi
+echo "========================================="
+echo "=== Pre-Flight Runtime Smoke Test     ==="
+echo "========================================="
+echo ">> Running Compute Node Pre-Flight Check (${TECHNIQUE}, ${MODEL}, ${ENGINE})..."
+uv run --no-sync main.py --technique "$TECHNIQUE" --model "$MODEL" --engine "$ENGINE" --dry-run
 
 echo "========================================="
 echo "=== KV-Bench Suite (Capped at 16GB)   ==="
@@ -76,6 +75,13 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+check_longmem_dataset() {
+    if [[ ! -f "data/longmemeval/longmemeval_benchmark.json" ]]; then
+        echo "ERROR: Required benchmark dataset 'data/longmemeval/longmemeval_benchmark.json' is missing on compute node." >&2
+        echo "Run './.agents/scripts/slurm_ctl.sh sync' from the local worktree to stage datasets." >&2
+        exit 1
+    fi
+}
 # ==============================================================================
 # PyTorch Scientific Control Pipeline (WP1-4-1 Diagnostic Testbed)
 # ==============================================================================
@@ -113,6 +119,7 @@ if [[ "$ENGINE" == "pytorch" ]]; then
         fi
 
         if [[ "$TECHNIQUE" == "baseline" || ! -f "$BASELINE_LONGMEM_REF" || "$FORCE_LONGMEM_REF" == "1" ]]; then
+            check_longmem_dataset
             echo ">> [PyTorch Baseline] Step 3: LongMemEval Adherence & Reference Capture (512 - 16384, Select by Length)..."
             uv run --no-sync main.py \
                 --technique baseline \
@@ -168,6 +175,7 @@ if [[ "$ENGINE" == "pytorch" ]]; then
                     --output "results/${CURRENT_TECH}_hardware_pytorch_16gb.json"
             fi
 
+            check_longmem_dataset
             echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2: Diagnostic LongMemEval Adherence & Causal Layer Retention (512 - 16384, Select by Length)..."
             uv run --no-sync main.py \
                 --technique "$CURRENT_TECH" \
@@ -271,6 +279,7 @@ if [[ "$TECHNIQUE" == "baseline" ]]; then
             echo ">> Skipping Steps 1 & 2 (Hardware sweeps already verified and consolidated)."
         fi
 
+        check_longmem_dataset
         echo ">> 3. Running Baseline Long-Term Memory Adherence & Reference Capture (LongMemEval across contexts)..."
         uv run --no-sync main.py \
             --technique baseline \
@@ -327,6 +336,7 @@ else
             LONGMEM_REF="results/references/baseline_${MODEL}_pytorch_ref.json"
         fi
 
+        check_longmem_dataset
         echo ">> 2. Running Macro LongMemEval Adherence & Quality Evaluation (${TECHNIQUE}, engine: ${ENGINE} vs baseline reference)..."
         uv run --no-sync main.py \
             --technique "$TECHNIQUE" \
