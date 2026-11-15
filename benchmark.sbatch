@@ -6,7 +6,7 @@
 #SBATCH --exclude=gpu01.slurm.cpe.kmutt.ac.th
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=08:00:00
 
 source /etc/profile
 set -euo pipefail
@@ -44,6 +44,7 @@ uv sync --frozen
 
 # Default to primary pure dense model (qwen3-4b); accepts aliases (phi4-mini, qwen3.5-4b, etc.)
 MODEL="${1:-qwen3-4b}"
+SUITE="${2:-}"
 TECHNIQUE="${TECHNIQUE:-turboquant}"
 ENGINE="${ENGINE:-pytorch}"
 RUN_FULL_SWEEP="${RUN_FULL_SWEEP:-1}"
@@ -54,16 +55,54 @@ CONCURRENT_USERS="1 4 8 12 16"
 EVAL_CONTEXTS="512 1024 2048 4096 8192 16384"
 NIAH_CONTEXTS="2048 4096"
 FORCE_LONGMEM_REF="${FORCE_LONGMEM_REF:-1}"
+SKIP_EXISTING="${SKIP_EXISTING:-0}"
+
+SUITE_TECH_LIST=()
+if [[ -n "$SUITE" ]]; then
+    eval "$(
+        uv run --no-sync python - "$SUITE" <<'PY'
+import json, shlex, sys
+suite_name = sys.argv[1]
+with open("src/config/suites.json", "r", encoding="utf-8") as f:
+    suites = json.load(f)
+if suite_name in suites:
+    cfg = suites[suite_name]
+    techs = cfg.get("techniques", [])
+    print("TECHNIQUE=" + shlex.quote(suite_name))
+    print("SUITE_TECH_LIST=(" + " ".join(shlex.quote(t) for t in techs) + ")")
+    if "skip_hardware_sweeps" in cfg:
+        print("SKIP_HARDWARE_SWEEPS=" + ("1" if cfg["skip_hardware_sweeps"] else "0"))
+    if "force_longmem_ref" in cfg:
+        print("FORCE_LONGMEM_REF=" + ("1" if cfg["force_longmem_ref"] else "0"))
+    if "contexts" in cfg:
+        print("CONTEXTS=" + shlex.quote(" ".join(str(x) for x in cfg["contexts"])))
+    if "eval_contexts" in cfg:
+        print("EVAL_CONTEXTS=" + shlex.quote(" ".join(str(x) for x in cfg["eval_contexts"])))
+    if "niah_contexts" in cfg:
+        print("NIAH_CONTEXTS=" + shlex.quote(" ".join(str(x) for x in cfg["niah_contexts"])))
+else:
+    print("TECHNIQUE=" + shlex.quote(suite_name))
+    print("SUITE_TECH_LIST=(" + shlex.quote(suite_name) + ")")
+PY
+    )"
+fi
 
 echo "Model Selected:     $MODEL"
+echo "Suite Selected:     ${SUITE:-<default>}"
 echo "Technique Selected: $TECHNIQUE"
 echo "Engine Selected:    $ENGINE"
 
 echo "========================================="
 echo "=== Pre-Flight Runtime Smoke Test     ==="
 echo "========================================="
-echo ">> Running Compute Node Pre-Flight Check (${TECHNIQUE}, ${MODEL}, ${ENGINE})..."
-uv run --no-sync main.py --technique "$TECHNIQUE" --model "$MODEL" --engine "$ENGINE" --dry-run
+PREFLIGHT_TECH="$TECHNIQUE"
+if [[ ${#SUITE_TECH_LIST[@]} -gt 0 ]]; then
+    PREFLIGHT_TECH="${SUITE_TECH_LIST[0]}"
+elif [[ "$TECHNIQUE" == "all" ]]; then
+    PREFLIGHT_TECH="baseline"
+fi
+echo ">> Running Compute Node Pre-Flight Check (${PREFLIGHT_TECH}, ${MODEL}, ${ENGINE})..."
+uv run --no-sync main.py --technique "$PREFLIGHT_TECH" --model "$MODEL" --engine "$ENGINE" --dry-run
 
 echo "========================================="
 echo "=== KV-Bench Suite (Capped at 16GB)   ==="
@@ -145,66 +184,102 @@ if [[ "$ENGINE" == "pytorch" ]]; then
     # --------------------------------------------------------------------------
     # 2. Technique Evaluation under PyTorch (e.g. H2O and StreamingLLM)
     # --------------------------------------------------------------------------
-    TECH_LIST=("h2o" "streamingllm")
-    if [[ "$TECHNIQUE" != "all" && "$TECHNIQUE" != "baseline" ]]; then
+    if [[ ${#SUITE_TECH_LIST[@]} -gt 0 ]]; then
+        TECH_LIST=("${SUITE_TECH_LIST[@]}")
+    elif [[ "$TECHNIQUE" == "all" ]]; then
+        TECH_LIST=("qserve_kv4" "headq" "cachegen" "arkvale" "epicache" "h2o" "streamingllm" "infinigen" "flexgen_kv" "turboquant" "shadowkv")
+    else
         TECH_LIST=("$TECHNIQUE")
     fi
 
+    FAILED_TECHS=()
     for CURRENT_TECH in "${TECH_LIST[@]}"; do
-        echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0: Verification (128 ctx, 16 tokens)..."
-        uv run --no-sync main.py \
-            --technique "$CURRENT_TECH" \
-            --engine pytorch \
-            --model "$MODEL" \
-            --verify \
-            --max-vram-gb 16.0 \
-            --eval-reference "$VERIFY_REF" \
-            --output "results/verify_${CURRENT_TECH}_pytorch_16gb.json"
-
-        if [[ "$RUN_FULL_SWEEP" == "1" ]]; then
-            if [[ "$SKIP_HARDWARE_SWEEPS" != "1" ]]; then
-                echo ">> [PyTorch Technique: $CURRENT_TECH] Step 1: Scaling Sweep (512 - 32768) evaluated against Macro Reference..."
+        echo ">> [PyTorch Technique: $CURRENT_TECH] Starting pipeline..."
+        if (
+            set -e
+            VERIFY_OUT="results/verify_${CURRENT_TECH}_pytorch_16gb.json"
+            if [[ "$SKIP_EXISTING" == "1" && -f "$VERIFY_OUT" ]]; then
+                echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0 skipped (exists: $VERIFY_OUT)"
+            else
+                echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0: Verification (128 ctx, 16 tokens)..."
                 uv run --no-sync main.py \
                     --technique "$CURRENT_TECH" \
                     --engine pytorch \
                     --model "$MODEL" \
-                    --contexts $CONTEXTS \
+                    --verify \
                     --max-vram-gb 16.0 \
-                    --profile \
-                    --eval-reference "$BASELINE_MACRO_REF" \
-                    --output "results/${CURRENT_TECH}_hardware_pytorch_16gb.json"
+                    --eval-reference "$VERIFY_REF" \
+                    --output "$VERIFY_OUT"
             fi
 
-            check_longmem_dataset
-            echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2: Diagnostic LongMemEval Adherence & Causal Layer Retention (512 - 16384, Select by Length)..."
-            uv run --no-sync main.py \
-                --technique "$CURRENT_TECH" \
-                --engine pytorch \
-                --model "$MODEL" \
-                --workload longmem \
-                --select-by-length \
-                --contexts $EVAL_CONTEXTS \
-                --max-tokens 32 \
-                --samples-per-task 10 \
-                --seed 42 \
-                --max-vram-gb 16.0 \
-                --eval-reference "$BASELINE_LONGMEM_REF" \
-                --output "results/${CURRENT_TECH}_longmem_pytorch_16gb.json"
+            if [[ "$RUN_FULL_SWEEP" == "1" ]]; then
+                HW_OUT="results/${CURRENT_TECH}_hardware_pytorch_16gb.json"
+                if [[ "$SKIP_HARDWARE_SWEEPS" != "1" ]]; then
+                    if [[ "$SKIP_EXISTING" == "1" && -f "$HW_OUT" ]]; then
+                        echo ">> [PyTorch Technique: $CURRENT_TECH] Step 1 skipped (exists: $HW_OUT)"
+                    else
+                        echo ">> [PyTorch Technique: $CURRENT_TECH] Step 1: Scaling Sweep (512 - 32768) evaluated against Macro Reference..."
+                        uv run --no-sync main.py \
+                            --technique "$CURRENT_TECH" \
+                            --engine pytorch \
+                            --model "$MODEL" \
+                            --contexts $CONTEXTS \
+                            --max-vram-gb 16.0 \
+                            --profile \
+                            --eval-reference "$BASELINE_MACRO_REF" \
+                            --output "$HW_OUT"
+                    fi
+                fi
 
-            echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3: Opt-In Mechanistic 2D NIAH Sweep..."
-            uv run --no-sync main.py \
-                --technique "$CURRENT_TECH" \
-                --engine pytorch \
-                --model "$MODEL" \
-                --workload niah \
-                --contexts $NIAH_CONTEXTS \
-                --max-tokens 16 \
-                --max-vram-gb 16.0 \
-                --output "results/${CURRENT_TECH}_niah_pytorch_16gb.json"
+                LM_OUT="results/${CURRENT_TECH}_longmem_pytorch_16gb.json"
+                if [[ "$SKIP_EXISTING" == "1" && -f "$LM_OUT" ]]; then
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2 skipped (exists: $LM_OUT)"
+                else
+                    check_longmem_dataset
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2: Diagnostic LongMemEval Adherence & Causal Layer Retention (512 - 16384, Select by Length)..."
+                    uv run --no-sync main.py \
+                        --technique "$CURRENT_TECH" \
+                        --engine pytorch \
+                        --model "$MODEL" \
+                        --workload longmem \
+                        --select-by-length \
+                        --contexts $EVAL_CONTEXTS \
+                        --max-tokens 32 \
+                        --samples-per-task 10 \
+                        --seed 42 \
+                        --max-vram-gb 16.0 \
+                        --eval-reference "$BASELINE_LONGMEM_REF" \
+                        --output "$LM_OUT"
+                fi
+
+                NIAH_OUT="results/${CURRENT_TECH}_niah_pytorch_16gb.json"
+                if [[ "$SKIP_EXISTING" == "1" && -f "$NIAH_OUT" ]]; then
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3 skipped (exists: $NIAH_OUT)"
+                else
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3: Opt-In Mechanistic 2D NIAH Sweep..."
+                    uv run --no-sync main.py \
+                        --technique "$CURRENT_TECH" \
+                        --engine pytorch \
+                        --model "$MODEL" \
+                        --workload niah \
+                        --contexts $NIAH_CONTEXTS \
+                        --max-tokens 16 \
+                        --max-vram-gb 16.0 \
+                        --output "$NIAH_OUT"
+                fi
+            fi
+        ); then
+            echo "=== PyTorch Benchmark Pipeline for $CURRENT_TECH Completed Successfully ==="
+        else
+            echo "ERROR: PyTorch Benchmark Pipeline for $CURRENT_TECH FAILED; continuing suite..." >&2
+            FAILED_TECHS+=("$CURRENT_TECH")
         fi
-
-        echo "=== PyTorch Benchmark Pipeline for $CURRENT_TECH Completed Successfully ==="
+        rm -rf results/traces/*
     done
+    if [[ ${#FAILED_TECHS[@]} -gt 0 ]]; then
+        echo "ERROR: Suite finished with failed techniques: ${FAILED_TECHS[*]}" >&2
+        exit 1
+    fi
     exit 0
 fi
 
