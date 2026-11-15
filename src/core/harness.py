@@ -193,6 +193,7 @@ def run_benchmark(
 
     for ctx in contexts:
         print(f"\n[context length: {ctx}]")
+        technique.setup()
         reset_gpu_memory()
         rss_before = host_rss_mb()
         llm = None
@@ -228,6 +229,7 @@ def run_benchmark(
                     cache_factory=cache_factory,
                     trust_remote_code=True,
                     dry_run=dry_run,
+                    on_sample_complete=technique.on_sample_complete,
                 )
             else:
                 from vllm import LLM

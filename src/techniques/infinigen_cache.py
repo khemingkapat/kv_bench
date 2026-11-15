@@ -380,6 +380,20 @@ class InfiniGenLayer(DynamicLayer):
     def get_max_length(self) -> int:
         return self.total_tokens_seen + 8192
 
+    def reset(self) -> None:
+        self.total_tokens_seen = 0
+        self.cpu_k_buf = None
+        self.cpu_v_buf = None
+        self.proxy_k_buf = None
+        self.gpu_keys = None
+        self.gpu_values = None
+        self.rotation_matrix = None
+        self.capacity = 0
+        self.total_bytes_transferred_pcie = 0
+        self.total_prefetched_blocks = 0
+        self.total_omitted_blocks = 0
+        super().reset()
+
 
 class InfiniGenCache(Cache):
     """Cache manager for InfiniGen speculative layer-ahead KV prefetching."""
