@@ -6,6 +6,7 @@ techniques without continuous batching or CUDA kernel compiler bias.
 
 from __future__ import annotations
 
+import gc
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -62,12 +63,14 @@ class PyTorchRunner:
         cache_factory: Callable[[], Cache] | None = None,
         trust_remote_code: bool = True,
         dry_run: bool = False,
+        on_sample_complete: Callable[[Any], None] | None = None,
     ):
         self.model_name_or_path = model_name_or_path
         self.revision = revision
         self.device = device
         self.cache_factory = cache_factory or (lambda: DynamicCache())
         self.dry_run = dry_run
+        self.on_sample_complete = on_sample_complete
         self.model: Any = None
         self.tokenizer: Any = None
 
@@ -154,16 +157,57 @@ class PyTorchRunner:
             return results
 
         request_outputs: list[PyTorchRequestOutput] = []
+        use_cuda = self.device.startswith("cuda") and torch.cuda.is_available()
 
         for req_idx, prompt in enumerate(prompts):
+            cache = self.cache_factory()
+            try:
+                req_out = self._generate_single(
+                    req_idx=req_idx,
+                    prompt=prompt,
+                    cache=cache,
+                    max_tokens=max_tokens,
+                    logprobs_topk=logprobs_topk,
+                    chunk_size=chunk_size,
+                    post_hoc_hook=post_hoc_hook,
+                    use_cuda=use_cuda,
+                )
+                request_outputs.append(req_out)
+            finally:
+                if self.on_sample_complete is not None:
+                    try:
+                        self.on_sample_complete(cache)
+                    except Exception:
+                        pass
+                if hasattr(cache, "reset"):
+                    try:
+                        cache.reset()
+                    except Exception:
+                        pass
+                del cache
+                gc.collect()
+                if use_cuda:
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+
+        return request_outputs
+
+    def _generate_single(
+        self,
+        req_idx: int,
+        prompt: str,
+        cache: Any,
+        max_tokens: int,
+        logprobs_topk: int,
+        chunk_size: int,
+        post_hoc_hook: Any,
+        use_cuda: bool,
+    ) -> PyTorchRequestOutput:
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
             prompt_token_ids = input_ids[0].tolist()
             seq_len = input_ids.shape[1]
 
-            cache = self.cache_factory()
-
             # Record prefill latency via CUDA events
-            use_cuda = self.device.startswith("cuda") and torch.cuda.is_available()
             start_wall = time.perf_counter()
 
             if use_cuda:
@@ -301,15 +345,4 @@ class PyTorchRunner:
                     req_out.diagnostics = post_hoc_hook(cache, req_idx, req_out)
                 except Exception as hook_err:
                     req_out.diagnostics = {"error": str(hook_err)}
-            request_outputs.append(req_out)
-
-            # Explicit cleanup of per-request GPU tensors to prevent allocator fragmentation
-            del input_ids, cache, out, next_token, last_logits
-            if "step_out" in locals():
-                del step_out
-            if "pos_tensor" in locals():
-                del pos_tensor
-            if use_cuda:
-                torch.cuda.empty_cache()
-
-        return request_outputs
+            return req_out

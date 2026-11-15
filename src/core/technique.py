@@ -47,6 +47,10 @@ class Technique(ABC):
         """
         return None
 
+    def on_sample_complete(self, cache: Any) -> None:
+        """Optional hook called after each sample in PyTorchRunner.generate() before cache teardown."""
+        return None
+
     def extra_metrics(self, llm, workload_output: WorkloadOutput) -> dict[str, Any]:
         """Optional technique-specific metrics layered on top of the core
         schema, e.g. PCIe bytes transferred or a quality score."""
