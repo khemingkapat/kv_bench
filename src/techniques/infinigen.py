@@ -247,6 +247,8 @@ class InfiniGenTechnique(Technique):
         )
 
     def setup(self) -> None:
+        self._sample_count = 0
+        self._accum_pcie_bytes = 0
         _ACTIVE_INFINIGEN_CONFIG.update(
             {
                 "enabled": True,
@@ -281,6 +283,14 @@ class InfiniGenTechnique(Technique):
             max_budget_ratio=self.max_budget_ratio,
         )
 
+    def on_sample_complete(self, cache: Any) -> None:
+        if cache is None:
+            return
+        self._sample_count = getattr(self, "_sample_count", 0) + 1
+        self._accum_pcie_bytes = getattr(self, "_accum_pcie_bytes", 0) + int(
+            getattr(cache, "total_bytes_transferred_pcie", 0)
+        )
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm
         total_seq_len = 0
@@ -297,11 +307,12 @@ class InfiniGenTechnique(Technique):
         from src.techniques.infinigen_cache import get_active_infinigen_cache
 
         active_cache = get_active_infinigen_cache()
-        pcie_bytes = (
-            active_cache.total_bytes_transferred_pcie
-            if active_cache is not None
-            else int(savings["infinigen_transfer_bytes"])
-        )
+        if getattr(self, "_sample_count", 0) > 0:
+            pcie_bytes = self._accum_pcie_bytes
+        elif active_cache is not None:
+            pcie_bytes = active_cache.total_bytes_transferred_pcie
+        else:
+            pcie_bytes = int(savings["infinigen_transfer_bytes"])
 
         return {
             "k_proxy_ratio": self.k_proxy_ratio,

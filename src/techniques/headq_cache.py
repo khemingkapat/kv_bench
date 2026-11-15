@@ -242,14 +242,16 @@ class HeadQLayer(DynamicLayer):
     def reset(self) -> None:
         self.total_tokens_seen = 0
         self.basis = None
-        self.is_initialized = False
+        self.k_packed_buf = None
+        self.k_scales_buf = None
+        self.z_packed_buf = None
+        self.z_scales_buf = None
+        self.v_packed_buf = None
+        self.v_scales_buf = None
+        self.capacity = 0
         self._keys_fallback = None
         self._values_fallback = None
-        if hasattr(self, "cumulative_length"):
-            if isinstance(self.cumulative_length, int):
-                self.cumulative_length = 0
-            else:
-                self.cumulative_length.zero_()
+        super().reset()
 
 
 class HeadQCache(Cache):

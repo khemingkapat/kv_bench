@@ -115,6 +115,21 @@ class TurboQuantTechnique(Technique):
 
         return _factory
 
+    def on_sample_complete(self, cache: Any) -> None:
+        """Snapshot telemetry from the completed sample before cache teardown."""
+        if cache is None:
+            return
+        set_active_turboquant_cache(cache)
+        global _LAST_PROFILED_METRICS
+        if hasattr(cache, "get_shannon_phi_metrics") and hasattr(cache, "get_cache_size_bytes"):
+            shannon_phi = cache.get_shannon_phi_metrics()
+            phys_bytes, theo_bytes = cache.get_cache_size_bytes()
+            _LAST_PROFILED_METRICS = {
+                "shannon_phi": dict(shannon_phi),
+                "physical_cache_bytes": int(phys_bytes),
+                "theoretical_cache_bytes": int(theo_bytes),
+            }
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm
         total_seq_len = 0

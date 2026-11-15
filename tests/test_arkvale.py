@@ -170,6 +170,33 @@ class TestArkValeTechnique(unittest.TestCase):
         self.assertEqual(len(outputs), 1)
         self.assertEqual(len(outputs[0].outputs[0].token_ids), 16)
 
+    def test_arkvale_layer_reset_releases_buffers_and_persists_telemetry(self):
+        technique = ArkValeTechnique(page_size=16, active_pages_budget=2, exempt_early_layers=0)
+        technique.setup()
+        cache = technique.pytorch_cache_factory()()
+
+        k_pre = torch.randn(1, 2, 48, 32, dtype=torch.float32)
+        v_pre = torch.randn(1, 2, 48, 32, dtype=torch.float32)
+        cache.update(k_pre, v_pre, layer_idx=0)
+        self.assertIsNotNone(cache.layers[0].cpu_k_buf)
+        self.assertGreater(cache.total_bytes_transferred_pcie, 0)
+
+        expected_pcie = cache.total_bytes_transferred_pcie
+        technique.on_sample_complete(cache)
+        cache.reset()
+
+        layer = cache.layers[0]
+        self.assertIsNone(layer.cpu_k_buf)
+        self.assertIsNone(layer.cpu_v_buf)
+        self.assertIsNone(layer.gpu_b_min)
+        self.assertIsNone(layer.gpu_b_max)
+        self.assertEqual(layer.capacity, 0)
+        self.assertEqual(layer.page_capacity, 0)
+
+        del cache
+        metrics = technique.extra_metrics(None, SimpleNamespace(prompt_tokens=48, generated_tokens=1))
+        self.assertEqual(metrics["pcie_transfer_bytes"], expected_pcie)
+
 
 if __name__ == "__main__":
     unittest.main()

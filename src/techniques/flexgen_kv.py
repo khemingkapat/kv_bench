@@ -259,6 +259,8 @@ class FlexGenKVTechnique(Technique):
 
     def setup(self) -> None:
         """Configure active FlexGen runtime state and install hooks."""
+        self._sample_count = 0
+        self._accum_pcie_bytes = 0
         _ACTIVE_FLEXGEN_CONFIG.update(
             {
                 "enabled": True,
@@ -297,6 +299,14 @@ class FlexGenKVTechnique(Technique):
             cpu_delegation=self.cpu_delegation,
         )
 
+    def on_sample_complete(self, cache: Any) -> None:
+        if cache is None:
+            return
+        self._sample_count = getattr(self, "_sample_count", 0) + 1
+        self._accum_pcie_bytes = getattr(self, "_accum_pcie_bytes", 0) + int(
+            getattr(cache, "total_bytes_transferred_pcie", 0)
+        )
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm
         total_seq_len = 0
@@ -310,11 +320,12 @@ class FlexGenKVTechnique(Technique):
         from src.techniques.flexgen_cache import get_active_flexgen_cache
 
         active_cache = get_active_flexgen_cache()
-        pcie_bytes = (
-            active_cache.total_bytes_transferred_pcie
-            if active_cache is not None
-            else 0
-        )
+        if getattr(self, "_sample_count", 0) > 0:
+            pcie_bytes = self._accum_pcie_bytes
+        elif active_cache is not None:
+            pcie_bytes = active_cache.total_bytes_transferred_pcie
+        else:
+            pcie_bytes = 0
 
         compression_ratio = 3.56 if self.quantize_kv else 1.0
 

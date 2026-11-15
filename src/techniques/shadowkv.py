@@ -398,6 +398,10 @@ class ShadowKVTechnique(Technique):
         )
 
     def setup(self) -> None:
+        self._sample_count = 0
+        self._accum_pcie_bytes = 0
+        self._accum_hits = 0
+        self._accum_misses = 0
         _ACTIVE_SHADOWKV_CONFIG.update(
             {
                 "enabled": True,
@@ -441,6 +445,16 @@ class ShadowKVTechnique(Technique):
             theta=self.theta,
         )
 
+    def on_sample_complete(self, cache: Any) -> None:
+        if cache is None:
+            return
+        self._sample_count = getattr(self, "_sample_count", 0) + 1
+        self._accum_pcie_bytes = getattr(self, "_accum_pcie_bytes", 0) + int(
+            getattr(cache, "total_bytes_transferred_pcie", 0)
+        )
+        self._accum_hits = getattr(self, "_accum_hits", 0) + int(getattr(cache, "temporal_hits", 0))
+        self._accum_misses = getattr(self, "_accum_misses", 0) + int(getattr(cache, "temporal_misses", 0))
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm
         total_seq_len = 0
@@ -460,16 +474,16 @@ class ShadowKVTechnique(Technique):
         from src.techniques.shadowkv_cache import get_active_shadowkv_cache
 
         active_cache = get_active_shadowkv_cache()
-        pcie_bytes = (
-            active_cache.total_bytes_transferred_pcie
-            if active_cache is not None
-            else int(savings["shadowkv_transfer_bytes"])
-        )
-        hit_rate = (
-            active_cache.temporal_hit_rate
-            if active_cache is not None
-            else self.temporal_reuse_target
-        )
+        if getattr(self, "_sample_count", 0) > 0:
+            pcie_bytes = self._accum_pcie_bytes
+            total_lookups = self._accum_hits + self._accum_misses
+            hit_rate = (self._accum_hits / total_lookups) if total_lookups > 0 else self.temporal_reuse_target
+        elif active_cache is not None:
+            pcie_bytes = active_cache.total_bytes_transferred_pcie
+            hit_rate = active_cache.temporal_hit_rate
+        else:
+            pcie_bytes = int(savings["shadowkv_transfer_bytes"])
+            hit_rate = self.temporal_reuse_target
 
         return {
             "svd_rank": self.svd_rank,

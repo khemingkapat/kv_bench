@@ -253,13 +253,36 @@ class ArkValeTechnique(Technique):
             exempt_early_layers=self.exempt_early_layers,
         )
 
+    def setup(self) -> None:
+        self._sample_count = 0
+        self._accum_pcie_bytes = 0
+        self._accum_recalled_pages = 0
+
+    def on_sample_complete(self, cache: Any) -> None:
+        if cache is None:
+            return
+        self._sample_count = getattr(self, "_sample_count", 0) + 1
+        self._accum_pcie_bytes = getattr(self, "_accum_pcie_bytes", 0) + int(
+            getattr(cache, "total_bytes_transferred_pcie", 0)
+        )
+        self._accum_recalled_pages = getattr(self, "_accum_recalled_pages", 0) + int(
+            getattr(cache, "total_recalled_pages", 0)
+        )
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm, workload_output
         from src.techniques.arkvale_cache import get_active_arkvale_cache
 
         active_cache = get_active_arkvale_cache()
-        pcie_bytes = active_cache.total_bytes_transferred_pcie if active_cache is not None else 0
-        recalled_pages = active_cache.total_recalled_pages if active_cache is not None else 0
+        if getattr(self, "_sample_count", 0) > 0:
+            pcie_bytes = self._accum_pcie_bytes
+            recalled_pages = self._accum_recalled_pages
+        elif active_cache is not None:
+            pcie_bytes = active_cache.total_bytes_transferred_pcie
+            recalled_pages = active_cache.total_recalled_pages
+        else:
+            pcie_bytes = 0
+            recalled_pages = 0
 
         return {
             "page_size": self.page_size,

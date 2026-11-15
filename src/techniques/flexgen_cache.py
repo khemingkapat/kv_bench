@@ -473,6 +473,24 @@ class FlexGenKVLayer(DynamicLayer):
     def get_max_length(self) -> int:
         return self.gpu_cache_tokens + self.cpu_cache_tokens
 
+    def reset(self) -> None:
+        self.gpu_keys = None
+        self.gpu_values = None
+        self.num_cpu_tokens = 0
+        self.cpu_capacity = 0
+        self.cpu_k_packed = None
+        self.cpu_k_scales = None
+        self.cpu_k_mins = None
+        self.cpu_v_packed = None
+        self.cpu_v_scales = None
+        self.cpu_v_mins = None
+        self.cpu_k_raw = None
+        self.cpu_v_raw = None
+        self.total_tokens_seen = 0
+        self.total_bytes_transferred_pcie = 0
+        self.num_offload_events = 0
+        super().reset()
+
 
 class FlexGenKVCache(Cache):
     """Cache implementation for FlexGen multi-tier KV offloading with 4-bit group quantization."""

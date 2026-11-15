@@ -210,12 +210,27 @@ class EpiCacheTechnique(Technique):
             layer_sensitivity_alpha=self.layer_sensitivity_alpha,
         )
 
+    def setup(self) -> None:
+        self._sample_count = 0
+        self._last_retained_tokens = 0
+
+    def on_sample_complete(self, cache: Any) -> None:
+        if cache is None:
+            return
+        self._sample_count = getattr(self, "_sample_count", 0) + 1
+        self._last_retained_tokens = int(cache.get_seq_length(0)) if hasattr(cache, "get_seq_length") else 0
+
     def extra_metrics(self, llm, workload_output) -> dict[str, Any]:
         del llm, workload_output
         from src.techniques.epicache_cache import get_active_epicache_cache
 
         active_cache = get_active_epicache_cache()
-        retained_tokens = active_cache.get_seq_length(0) if active_cache is not None else 0
+        if getattr(self, "_sample_count", 0) > 0:
+            retained_tokens = self._last_retained_tokens
+        elif active_cache is not None:
+            retained_tokens = active_cache.get_seq_length(0)
+        else:
+            retained_tokens = 0
 
         return {
             "num_episodes": self.num_episodes,

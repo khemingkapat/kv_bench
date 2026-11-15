@@ -276,16 +276,17 @@ class ArkValeLayer(DynamicLayer):
         self.resident_pages = set()
         self.gpu_active_k = None
         self.gpu_active_v = None
+        self.cpu_k_buf = None
+        self.cpu_v_buf = None
+        self.gpu_b_min = None
+        self.gpu_b_max = None
+        self.capacity = 0
+        self.page_capacity = 0
         self.total_bytes_transferred_pcie = 0
         self.total_recalled_pages = 0
-        self.is_initialized = False
         self._keys_fallback = None
         self._values_fallback = None
-        if hasattr(self, "cumulative_length"):
-            if isinstance(self.cumulative_length, int):
-                self.cumulative_length = 0
-            else:
-                self.cumulative_length.zero_()
+        super().reset()
 
 
 class ArkValeCache(Cache):

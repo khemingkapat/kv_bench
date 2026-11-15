@@ -518,6 +518,30 @@ class ShadowKVLayer(DynamicLayer):
     def get_max_length(self) -> int:
         return max(self.total_tokens_seen, 32768)
 
+    def reset(self) -> None:
+        self.is_offloaded = False
+        self.total_tokens_seen = 0
+        self.prefill_seq_len = 0
+        self.dense_keys = None
+        self.dense_values = None
+        self.key_a = None
+        self.key_b = None
+        self.landmarks = None
+        self.num_chunks = 0
+        self.outlier_chunk_indices = []
+        self.gpu_anchor_keys = None
+        self.gpu_anchor_values = None
+        self.gpu_anchor_pos = None
+        self.cpu_values = None
+        self.cached_topk_indices = set()
+        self.cached_sparse_keys = None
+        self.cached_sparse_values = None
+        self.cached_sparse_pos = None
+        self.total_bytes_transferred_pcie = 0
+        self.temporal_hits = 0
+        self.temporal_misses = 0
+        super().reset()
+
 
 class ShadowKVCache(Cache):
     """Cache implementation for ShadowKV (GPU Low-Rank Keys + Host CPU Values)."""
