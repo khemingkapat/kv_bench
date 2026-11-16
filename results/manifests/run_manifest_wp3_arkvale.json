@@ -33,23 +33,23 @@
   "golden_artifacts": {
     "arkvale_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/arkvale_hardware_pytorch_16gb.json",
-      "sha256": "ae157a8de1316b1e43e528a57641aceca9229b8160f49b57867d02a2d9abc998",
-      "size_bytes": 9685
+      "sha256": "ba4c2ed121e11a4f87cd37795501ddbfd362f190fabcb7096fc1bc5773ed1c9a",
+      "size_bytes": 9687
     },
     "arkvale_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/arkvale_longmem_pytorch_16gb.json",
-      "sha256": "02a7099661776945160399b2dc3b3d15d4974d5f9349cba489bcdeb185994309",
-      "size_bytes": 35967
+      "sha256": "afd450e7b2725ece07a8f3747face50663b44665e3b679d7d9e393b977349628",
+      "size_bytes": 35996
     },
     "arkvale_niah_pytorch_16gb": {
       "path": "results/runs/wp3/arkvale_niah_pytorch_16gb.json",
-      "sha256": "905adc25159020d8d374dab4964ece48acdb85937bf9dc1525730cce4d64c758",
-      "size_bytes": 7084
+      "sha256": "cc37c564cb5b7ccb8395c83f1ec7a7a7b525bfd206f928ab2811fbc29e79829e",
+      "size_bytes": 7089
     },
     "verify_arkvale_pytorch_16gb": {
       "path": "results/runs/wp3/verify_arkvale_pytorch_16gb.json",
-      "sha256": "ac714f273bbb18345deed4e521a565103270361278d98eae960c08a088484191",
-      "size_bytes": 1339
+      "sha256": "6094d85b6a0e8a10650b2c3cf9c105d4f6218215f7152184ef1063cacb4b33a3",
+      "size_bytes": 1338
     }
   }
 }

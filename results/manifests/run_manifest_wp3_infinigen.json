@@ -35,23 +35,23 @@
   "golden_artifacts": {
     "infinigen_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/infinigen_hardware_pytorch_16gb.json",
-      "sha256": "51ce698454d1055ff9135699c7d500d26e31fecfb5da02566fa0dc40042b8255",
-      "size_bytes": 9483
+      "sha256": "85ad425a18e7cda2596016939b35585892cd7c2510572bff9b7819e32dc6e161",
+      "size_bytes": 11382
     },
     "infinigen_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/infinigen_longmem_pytorch_16gb.json",
-      "sha256": "16b7645a2b416170a523bd9e97511a5c2da8b67477e64da95d71a0763bcea09e",
-      "size_bytes": 28699
+      "sha256": "c3d9ece137f4d48025fc0d6036fdb9146835c17eb2e55fd519204d16cb9eae2f",
+      "size_bytes": 37383
     },
     "infinigen_niah_pytorch_16gb": {
       "path": "results/runs/wp3/infinigen_niah_pytorch_16gb.json",
-      "sha256": "c1c199b131511080975972004ef4261e3539fb9f285cb873b7ab4e32a0ccc35b",
-      "size_bytes": 7749
+      "sha256": "3edd0b98a4cca0bdb458adb1bffe75ce2c766d61dc7fce6d859b26f5a7cd671d",
+      "size_bytes": 7577
     },
     "verify_infinigen_pytorch_16gb": {
       "path": "results/runs/wp3/verify_infinigen_pytorch_16gb.json",
-      "sha256": "2e5d267e8b705f2bcaf27506e85f2f60404f63c154a123c2067431e5dcbe323a",
-      "size_bytes": 1598
+      "sha256": "0d869719111f4122ff2d5e65364267c3bc8a287bfb1c6b3ef128b51744d0cd93",
+      "size_bytes": 1597
     }
   }
 }

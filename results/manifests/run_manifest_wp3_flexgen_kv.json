@@ -36,23 +36,23 @@
   "golden_artifacts": {
     "flexgen_kv_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/flexgen_kv_hardware_pytorch_16gb.json",
-      "sha256": "073499d68d1d698c60cf0a1700e03ea6dad1333106f8115fe92fd4cd17b34f33",
-      "size_bytes": 9425
+      "sha256": "bd79f1dd9965a48064da778921df20967d26d1de1ca99c420714fe435c4fc7d9",
+      "size_bytes": 11359
     },
     "flexgen_kv_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/flexgen_kv_longmem_pytorch_16gb.json",
-      "sha256": "8d53a7d1f150c0d9f0c0545dfee4ab8c6942402b1d0e96dc84a5259b26368801",
-      "size_bytes": 41596
+      "sha256": "6861240031c7fc7f5399beb18b28492b370673a4762482b84deaf087d094faf7",
+      "size_bytes": 37036
     },
     "flexgen_kv_niah_pytorch_16gb": {
       "path": "results/runs/wp3/flexgen_kv_niah_pytorch_16gb.json",
-      "sha256": "98d9d593c811aa7ebede0475cc9d4c65ab1875d2fdc80b84c810952d50b05eda",
-      "size_bytes": 8180
+      "sha256": "6ff0ae38d44b386b15b6a439812d2d4842f09a9748cca2265a10e7540e5f1d45",
+      "size_bytes": 7607
     },
     "verify_flexgen_kv_pytorch_16gb": {
       "path": "results/runs/wp3/verify_flexgen_kv_pytorch_16gb.json",
-      "sha256": "cd9d5416f32f675b91aacbd2cde2cb35d8f4dea7de4f0b016fac1edd20d0c8b0",
-      "size_bytes": 1571
+      "sha256": "8850c517fcaf52a6bd2622a66ff01198e9bb2960d68b231981bacdd402fb17af",
+      "size_bytes": 1570
     }
   }
 }
