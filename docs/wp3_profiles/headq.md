@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `headq_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`8dc8e382da4d…`) | `headq_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`86a8bb1a763f…`) | `headq_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`33c8f7aead57…`)
+**Artifact Provenance (SHA-256):** `headq_hardware_pytorch_16gb.json`: `VERIFIED` (`8dc8e382da4d…`) | `headq_longmem_pytorch_16gb.json`: `VERIFIED` (`7f8276616601…`) | `headq_niah_pytorch_16gb.json`: `VERIFIED` (`33c8f7aead57…`)
 
 ---
 
@@ -79,12 +79,12 @@ HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits
 
 | Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
 |---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.00 | 0.01 | 0/10 | 2 | 8 | 1.00 | 16.00 |
-| 1024 | 0.00 | 0.00 | 0/10 | 3 | 7 | 1.00 | 16.00 |
-| 2048 | 0.00 | 0.00 | 0/20 | 5 | 15 | 1.00 | 16.00 |
-| 4096 | 0.00 | 0.00 | 0/18 | 7 | 11 | 1.00 | 16.00 |
-| 8192 | 0.00 | 0.01 | 0/26 | 5 | 21 | 1.00 | 16.00 |
-| 16384 | 0.00 | 0.00 | 0/15 | 3 | 12 | 1.00 | 16.00 |
+| 512 | 0.00 | 0.01 | 0/10 | 2 | 8 | 1.00 | 3.25 |
+| 1024 | 0.00 | 0.00 | 0/10 | 3 | 7 | 1.00 | 3.25 |
+| 2048 | 0.00 | 0.00 | 0/20 | 5 | 15 | 1.00 | 3.25 |
+| 4096 | 0.00 | 0.00 | 0/18 | 7 | 11 | 1.00 | 3.25 |
+| 8192 | 0.00 | 0.01 | 0/26 | 5 | 21 | 1.00 | 3.25 |
+| 16384 | 0.00 | 0.00 | 0/15 | 3 | 12 | 1.00 | 3.25 |
 
 #### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
 

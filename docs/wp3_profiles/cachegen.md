@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL, SPATIAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `cachegen_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`acc433feceac…`) | `cachegen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`d555aa946243…`) | `cachegen_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`67b12f9ee081…`)
+**Artifact Provenance (SHA-256):** `cachegen_hardware_pytorch_16gb.json`: `VERIFIED` (`acc433feceac…`) | `cachegen_longmem_pytorch_16gb.json`: `VERIFIED` (`409fbe1a671a…`) | `cachegen_niah_pytorch_16gb.json`: `VERIFIED` (`67b12f9ee081…`)
 
 ---
 
@@ -79,12 +79,12 @@ CacheGen encodes KV tensors using anchor-delta compression (storing periodic anc
 
 | Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
 |---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.06 | 2/10 | 1 | 7 | 1.00 | 16.00 |
-| 1024 | 0.10 | 0.04 | 1/10 | 2 | 7 | 1.00 | 16.00 |
-| 2048 | 0.00 | 0.06 | 0/20 | 5 | 15 | 1.00 | 16.00 |
-| 4096 | 0.33 | 0.09 | 6/18 | 1 | 11 | 1.00 | 16.00 |
-| 8192 | 0.23 | 0.08 | 6/26 | 0 | 20 | 1.00 | 16.00 |
-| 16384 | 0.07 | 0.07 | 1/15 | 2 | 12 | 1.00 | 16.00 |
+| 512 | 0.20 | 0.06 | 2/10 | 1 | 7 | 1.00 | 6.39 |
+| 1024 | 0.10 | 0.04 | 1/10 | 2 | 7 | 1.00 | 6.39 |
+| 2048 | 0.00 | 0.06 | 0/20 | 5 | 15 | 1.00 | 6.39 |
+| 4096 | 0.33 | 0.09 | 6/18 | 1 | 11 | 1.00 | 6.39 |
+| 8192 | 0.23 | 0.08 | 6/26 | 0 | 20 | 1.00 | 6.39 |
+| 16384 | 0.07 | 0.07 | 1/15 | 2 | 12 | 1.00 | 6.39 |
 
 #### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
 

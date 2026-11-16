@@ -19,8 +19,8 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 | WP3-6 | **FlexGen-KV** | `SPATIAL` | 8889 | 229.6 | 6565 | 1646964418 | 10.80 | 7.34 | 100% / 100% | 24/99 | 6 | [Profile](wp3_profiles/flexgen_kv.md) |
 | WP3-7 | **ShadowKV** | `SPATIAL` | 14233 | 85.3 | 5325 | 67241955 | 5.32 | 3.85 | 100% / 100% | 22/99 | 3 | [Profile](wp3_profiles/shadowkv.md) |
 | WP3-8 | **CacheGen** | `STRUCTURAL` | 10600 | 82.9 | 4536 | 935016151 | 12.87 | 12.58 | 40% / 80% | 16/99 | 11 | [Profile](wp3_profiles/cachegen.md) |
-| WP3-9 | **InfiniGen** | `TEMPORAL` | 13910 | 219.7 | 20491 | 1829885205 | 11.64 | 6.46 | 100% / 100% | 24/99 | 4 | [Profile](wp3_profiles/infinigen.md) |
-| WP3-10 | **ArkVale** | `SPATIAL` | 9033 | 102.9 | 16614 | 1618383854 | 11.42 | 6.63 | 100% / 100% | 23/99 | 4 | [Profile](wp3_profiles/arkvale.md) |
+| WP3-9 | **InfiniGen** | `SPATIAL` | 13910 | 219.7 | 20491 | 1829885205 | 11.64 | 6.46 | 100% / 100% | 24/99 | 4 | [Profile](wp3_profiles/infinigen.md) |
+| WP3-10 | **ArkVale** | `STRUCTURAL` | 9033 | 102.9 | 16614 | 1618383854 | 11.42 | 6.63 | 100% / 100% | 23/99 | 4 | [Profile](wp3_profiles/arkvale.md) |
 | WP3-11 | **EpiCache** | `STRUCTURAL` | 8567 | 30.6 | 2846 | 442264 | 9.86 | 9.00 | 0% / 0% | 10/99 | 17 | [Profile](wp3_profiles/epicache.md) |
 
 ---
@@ -67,12 +67,12 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 - **Prominent Upside:** **19.8% lower 32K VRAM** (10600 MB)
 - **Primary Trade-Off:** 32K decode TPOT is **2.84× slower** (82.9 ms/tok); NIAH drops to **40% @2K / 80% @4K**; LongMemEval **16/99** (11 regressions vs. 25 baseline); high PG-19 KL (**12.87**)
 
-### WP3-9: InfiniGen (`TEMPORAL`) — [Full Profile](wp3_profiles/infinigen.md)
+### WP3-9: InfiniGen (`SPATIAL`) — [Full Profile](wp3_profiles/infinigen.md)
 - **Mechanism:** InfiniGen speculatively prefetches important KV blocks from CPU memory one layer ahead by using low-rank key proxies and threshold-based importance prediction to overlap host-to-device transfers with layer computation.
 - **Prominent Upside:** **100% NIAH** exact-match retrieval (2K & 4K)
 - **Primary Trade-Off:** **+5.2% higher 32K VRAM** (13910 MB vs. 13225 MB baseline); 32K decode TPOT is **7.53× slower** (219.7 ms/tok); LongMemEval **24/99** (4 regressions vs. 25 baseline)
 
-### WP3-10: ArkVale (`SPATIAL`) — [Full Profile](wp3_profiles/arkvale.md)
+### WP3-10: ArkVale (`STRUCTURAL`) — [Full Profile](wp3_profiles/arkvale.md)
 - **Mechanism:** ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and maintains Axis-Aligned Bounding Box (AABB) geometric digests on the GPU to recall and page-in only the relevant KV pages per query.
 - **Prominent Upside:** **31.7% lower 32K VRAM** (9033 MB); **100% NIAH** exact-match retrieval (2K & 4K)
 - **Primary Trade-Off:** 32K decode TPOT is **3.53× slower** (102.9 ms/tok); LongMemEval **23/99** (4 regressions vs. 25 baseline)

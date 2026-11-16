@@ -177,7 +177,7 @@ TECHNIQUES: list[dict[str, Any]] = [
         "id": "infinigen",
         "name": "InfiniGen",
         "wp": "WP3-9",
-        "primary_axis": "TEMPORAL",
+        "primary_axis": "SPATIAL",
         "axes": ["SPATIAL", "TEMPORAL", "STRUCTURAL"],
         "summary": (
             "InfiniGen speculatively prefetches important KV blocks from CPU memory one layer ahead "
@@ -194,7 +194,7 @@ TECHNIQUES: list[dict[str, Any]] = [
         "id": "arkvale",
         "name": "ArkVale",
         "wp": "WP3-10",
-        "primary_axis": "SPATIAL",
+        "primary_axis": "STRUCTURAL",
         "axes": ["STRUCTURAL", "SPATIAL"],
         "summary": (
             "ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and "
@@ -225,6 +225,21 @@ TECHNIQUES: list[dict[str, Any]] = [
         ),
     },
 ]
+
+
+def resolve_result_path(filename: str) -> Path:
+    """Locate a result JSON across flat results/, runs/wp3/, baselines/, or sibling kv_co-op_hub."""
+    candidates = [
+        RESULTS_DIR / filename,
+        RESULTS_DIR / "runs" / "wp3" / filename,
+        RESULTS_DIR / "baselines" / filename,
+        ROOT.parent / "kv_co-op_hub" / "results" / "runs" / "wp3" / filename,
+        ROOT.parent / "kv_co-op_hub" / "results" / "baselines" / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return RESULTS_DIR / filename
 
 
 def load_json(path: Path) -> dict[str, Any] | None:
@@ -572,14 +587,17 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
     fig_dir.mkdir(parents=True, exist_ok=True)
 
     paths = {
-        "hardware": RESULTS_DIR / f"{tid}_hardware_pytorch_16gb.json",
-        "longmem": RESULTS_DIR / f"{tid}_longmem_pytorch_16gb.json",
-        "niah": RESULTS_DIR / f"{tid}_niah_pytorch_16gb.json",
+        "hardware": resolve_result_path(f"{tid}_hardware_pytorch_16gb.json"),
+        "longmem": resolve_result_path(f"{tid}_longmem_pytorch_16gb.json"),
+        "niah": resolve_result_path(f"{tid}_niah_pytorch_16gb.json"),
     }
     hw_json = load_json(paths["hardware"])
     lm_json = load_json(paths["longmem"])
     ni_json = load_json(paths["niah"])
-    manifest = load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}.json") or load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}_pytorch.json")
+    manifest = (
+        load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}_pytorch.json")
+        or load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}.json")
+    )
     prov_rows = verify_provenance(tid, paths, manifest)
 
     hw_res = (hw_json or {}).get("results") or None
@@ -958,8 +976,8 @@ def main() -> None:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-    base_hw_json = load_json(RESULTS_DIR / "baseline_pytorch_16gb.json")
-    base_lm_json = load_json(RESULTS_DIR / "longmem_baseline_pytorch_16gb.json")
+    base_hw_json = load_json(resolve_result_path("baseline_pytorch_16gb.json"))
+    base_lm_json = load_json(resolve_result_path("longmem_baseline_pytorch_16gb.json"))
     if not base_hw_json or not base_lm_json:
         raise FileNotFoundError("Canonical PyTorch baseline files (baseline_pytorch_16gb.json / longmem_baseline_pytorch_16gb.json) are required.")
 

@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`89427071103f…`) | `qserve_kv4_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6400f386d866…`)
+**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `VERIFIED` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `VERIFIED` (`ea1f7f63e45d…`) | `qserve_kv4_niah_pytorch_16gb.json`: `VERIFIED` (`6400f386d866…`)
 
 ---
 
@@ -79,12 +79,12 @@ QServe KV4 performs group-wise 4-bit symmetric/asymmetric KV-cache quantization 
 
 | Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
 |---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.13 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.25 | 0.12 | 5/20 | 1 | 14 | 1.00 | 16.00 |
-| 4096 | 0.39 | 0.10 | 7/18 | 0 | 11 | 1.00 | 16.00 |
-| 8192 | 0.31 | 0.08 | 8/26 | 0 | 18 | 1.00 | 16.00 |
-| 16384 | 0.20 | 0.09 | 3/15 | 1 | 11 | 1.00 | 16.00 |
+| 512 | 0.20 | 0.13 | 2/10 | 0 | 8 | 1.00 | 4.50 |
+| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 4.50 |
+| 2048 | 0.25 | 0.12 | 5/20 | 1 | 14 | 1.00 | 4.50 |
+| 4096 | 0.39 | 0.10 | 7/18 | 0 | 11 | 1.00 | 4.50 |
+| 8192 | 0.31 | 0.08 | 8/26 | 0 | 18 | 1.00 | 4.50 |
+| 16384 | 0.20 | 0.09 | 3/15 | 1 | 11 | 1.00 | 4.50 |
 
 #### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
 

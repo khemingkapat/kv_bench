@@ -1,8 +1,8 @@
 # WP3-9: InfiniGen
 
-**Primary Axis:** `TEMPORAL` | **All Axes:** `SPATIAL, TEMPORAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
+**Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, TEMPORAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`85ad425a18e7…`) | `infinigen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`c3d9ece137f4…`) | `infinigen_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`3edd0b98a4cc…`)
+**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `VERIFIED` (`85ad425a18e7…`) | `infinigen_longmem_pytorch_16gb.json`: `VERIFIED` (`c3d9ece137f4…`) | `infinigen_niah_pytorch_16gb.json`: `VERIFIED` (`3edd0b98a4cc…`)
 
 ---
 

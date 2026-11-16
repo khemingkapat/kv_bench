@@ -34,22 +34,22 @@
   "golden_artifacts": {
     "cachegen_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/cachegen_hardware_pytorch_16gb.json",
-      "sha256": "afd6ede594157aaa5fbdcca59d8767228a8a5e478a151626c3005d93d3b9ed55",
-      "size_bytes": 9670
+      "sha256": "acc433feceacefd6e24f735e0dd5bee34b4fbf257389848f8fec5b48342b32f3",
+      "size_bytes": 9673
     },
     "cachegen_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/cachegen_longmem_pytorch_16gb.json",
-      "sha256": "81456cde20c55577ae07ec4769151ae9ef584d48ddb534446529204d71d79161",
-      "size_bytes": 35270
+      "sha256": "409fbe1a671aa7d1be448d404d13536db1bc99bb4813355f272f09dd0a7bcdc8",
+      "size_bytes": 35028
     },
     "cachegen_niah_pytorch_16gb": {
       "path": "results/runs/wp3/cachegen_niah_pytorch_16gb.json",
-      "sha256": "dcec828c896970df43e123d1eac60e0b719652d616cd755fecf201bdd9b12424",
-      "size_bytes": 7066
+      "sha256": "67b12f9ee081f2f3813290f475cc426d6a3862a98a41c3fc8c874169b8adda7a",
+      "size_bytes": 7068
     },
     "verify_cachegen_pytorch_16gb": {
       "path": "results/runs/wp3/verify_cachegen_pytorch_16gb.json",
-      "sha256": "53d7416939390af48f59d1bf036fcedd90bd6c19d9cb250f30c026d2dff145b9",
+      "sha256": "3e7c6c3e0ed2448d586a74c45404508ab995fc228eae5c4accdd86d7f486c9c9",
       "size_bytes": 1353
     }
   }

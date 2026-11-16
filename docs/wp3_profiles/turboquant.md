@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`0864eb6d8baf…`) | `turboquant_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`08562dd7526b…`)
+**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `VERIFIED` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `VERIFIED` (`df8c8f98d862…`) | `turboquant_niah_pytorch_16gb.json`: `VERIFIED` (`08562dd7526b…`)
 
 ---
 
@@ -79,12 +79,12 @@ TurboQuant applies asymmetric low-bit quantization to Keys and Values, using a W
 
 | Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
 |---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.10 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.25 | 0.11 | 5/20 | 1 | 14 | 1.00 | 16.00 |
-| 4096 | 0.33 | 0.08 | 6/18 | 2 | 10 | 1.00 | 16.00 |
-| 8192 | 0.35 | 0.10 | 9/26 | 1 | 16 | 1.00 | 16.00 |
-| 16384 | 0.13 | 0.11 | 2/15 | 1 | 12 | 1.00 | 16.00 |
+| 512 | 0.20 | 0.10 | 2/10 | 0 | 8 | 1.00 | 4.38 |
+| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 4.38 |
+| 2048 | 0.25 | 0.11 | 5/20 | 1 | 14 | 1.00 | 4.38 |
+| 4096 | 0.33 | 0.08 | 6/18 | 2 | 10 | 1.00 | 4.38 |
+| 8192 | 0.35 | 0.10 | 9/26 | 1 | 16 | 1.00 | 4.38 |
+| 16384 | 0.13 | 0.11 | 2/15 | 1 | 12 | 1.00 | 4.38 |
 
 #### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
 

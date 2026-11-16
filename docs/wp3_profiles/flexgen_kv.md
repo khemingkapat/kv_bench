@@ -2,7 +2,7 @@
 
 **Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `flexgen_kv_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`bd79f1dd9965…`) | `flexgen_kv_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6861240031c7…`) | `flexgen_kv_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6ff0ae38d44b…`)
+**Artifact Provenance (SHA-256):** `flexgen_kv_hardware_pytorch_16gb.json`: `VERIFIED` (`bd79f1dd9965…`) | `flexgen_kv_longmem_pytorch_16gb.json`: `VERIFIED` (`6861240031c7…`) | `flexgen_kv_niah_pytorch_16gb.json`: `VERIFIED` (`6ff0ae38d44b…`)
 
 ---
 
