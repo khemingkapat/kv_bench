@@ -217,12 +217,6 @@ class CacheGenTechnique(Technique):
         self.deep_bits = int(deep_bits)
         self.block_size = int(block_size)
 
-    @property
-    def compression_ratio(self) -> float:
-        """Average compression ratio across all layer tiers relative to 16-bit FP16."""
-        mean_bits = (self.shallow_bits + self.mid_bits + self.deep_bits) / 3.0
-        return round(16.0 / mean_bits, 2)
-
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch constructor."""
         del context_length, max_tokens
@@ -273,7 +267,6 @@ class CacheGenTechnique(Technique):
             "shallow_bits": self.shallow_bits,
             "mid_bits": self.mid_bits,
             "deep_bits": self.deep_bits,
-            "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "compressed_bitstream_bytes": compressed_bytes,
             "delta_encoding_active": True,

@@ -27,7 +27,7 @@ class TestEpiCacheTechnique(unittest.TestCase):
         technique = get_technique("epicache")
         self.assertIsInstance(technique, EpiCacheTechnique)
         self.assertEqual(technique.axes, Axis.STRUCTURAL | Axis.SPATIAL)
-        self.assertEqual(technique.compression_ratio, 3.8)
+        self.assertFalse(hasattr(technique, "compression_ratio"))
 
     def test_defaults_and_custom_parameters(self):
         technique = get_technique("epicache")

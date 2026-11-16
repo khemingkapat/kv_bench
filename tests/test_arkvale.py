@@ -27,7 +27,7 @@ class TestArkValeTechnique(unittest.TestCase):
         technique = get_technique("arkvale")
         self.assertIsInstance(technique, ArkValeTechnique)
         self.assertEqual(technique.axes, Axis.STRUCTURAL | Axis.SPATIAL)
-        self.assertEqual(technique.compression_ratio, 4.5)
+        self.assertFalse(hasattr(technique, "compression_ratio"))
 
     def test_defaults_and_custom_parameters(self):
         technique = get_technique("arkvale")

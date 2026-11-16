@@ -368,7 +368,7 @@ def _run_with_profiler(llm, workload, ctx: int, max_tokens: int, profile_dir: st
     trace_path = os.path.join(profile_dir, f"{technique_name}_ctx{ctx}.pt.trace.json")
 
     with profiler.profile(
-        activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+        activities=[profiler.ProfilerActivity.CUDA],
         record_shapes=False,
         profile_memory=False,
         with_stack=False,
@@ -376,4 +376,7 @@ def _run_with_profiler(llm, workload, ctx: int, max_tokens: int, profile_dir: st
         workload.run(llm, ctx, max_tokens)
 
     prof.export_chrome_trace(trace_path)
+    del prof
+    import gc
+    gc.collect()
     return trace_path

@@ -288,11 +288,6 @@ class QServeKV4Technique(Technique):
         self.alpha = float(alpha)
         self.block_size = int(block_size)
 
-    @property
-    def compression_ratio(self) -> float:
-        """Compression ratio relative to standard 16-bit (BF16/FP16) cache."""
-        return 4.0
-
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch engine constructor."""
         del context_length, max_tokens
@@ -340,7 +335,6 @@ class QServeKV4Technique(Technique):
             "kv_cache_bits": 4,
             "quant_group_size": self.group_size,
             "smooth_attention_alpha": self.alpha,
-            "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "quantized_cache_bytes": quantized_bytes,
         }

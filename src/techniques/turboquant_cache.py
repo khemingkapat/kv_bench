@@ -257,6 +257,11 @@ class TurboQuantCache(Cache):
             "v_eps_dir": round(v_dir_sum / count, 6),
         }
 
+    @property
+    def effective_bits_per_scalar(self) -> float:
+        """Physical bits per KV scalar (140B / 512B BF16 * 16, incl. FP32 norms)."""
+        return 4.375
+
     def __iter__(self) -> Iterator[tuple[Any, Any, Any]]:
         for layer in self.layers:
             yield getattr(layer, "key_packed", None), getattr(layer, "value_packed", None), None

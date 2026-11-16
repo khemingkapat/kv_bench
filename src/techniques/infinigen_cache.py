@@ -268,7 +268,28 @@ class InfiniGenLayer(DynamicLayer):
             device="cpu",
             pin_memory=pin,
         )
-        new_cpu_v = torch.empty_like(new_cpu_k)
+        new_cpu_v = torch.empty(
+            (batch_size, num_kv, new_capacity, head_dim),
+            dtype=target_dtype,
+            device="cpu",
+            pin_memory=pin,
+        )
+
+        staging_capacity = max(int(new_capacity * self.max_budget_ratio) + 2 * self.block_size, 2048)
+        staging_capacity = min(staging_capacity, new_capacity)
+        if getattr(self, "staging_cpu_k", None) is None or self.staging_cpu_k.shape[2] < staging_capacity:
+            self.staging_cpu_k = torch.empty(
+                (batch_size, num_kv, staging_capacity, head_dim),
+                dtype=target_dtype,
+                device="cpu",
+                pin_memory=pin,
+            )
+            self.staging_cpu_v = torch.empty(
+                (batch_size, num_kv, staging_capacity, head_dim),
+                dtype=target_dtype,
+                device="cpu",
+                pin_memory=pin,
+            )
 
         new_proxy_k = torch.empty(
             (batch_size, num_kv, new_capacity, self.d_proxy),
@@ -349,16 +370,43 @@ class InfiniGenLayer(DynamicLayer):
             recent_block = total_blocks - 1
             all_blocks_to_fetch = set(prefetched_blocks) | {sink_block, recent_block}
 
-            # Retrieve only scheduled blocks from CPU DRAM
-            fetch_indices: list[int] = []
-            for b in sorted(all_blocks_to_fetch):
+            # Retrieve only scheduled blocks from CPU DRAM via pre-allocated pinned staging buffers
+            sorted_blocks = sorted(all_blocks_to_fetch)
+            total_fetch_len = sum(
+                min(self.total_tokens_seen, (b + 1) * self.block_size) - b * self.block_size
+                for b in sorted_blocks
+            )
+            if self.staging_cpu_k is None or self.staging_cpu_k.shape[2] < total_fetch_len:
+                pin = torch.cuda.is_available()
+                bs, nkv, _, hd = self.cpu_k_buf.shape
+                self.staging_cpu_k = torch.empty(
+                    (bs, nkv, max(total_fetch_len, 2048), hd),
+                    dtype=self.cpu_k_buf.dtype,
+                    device="cpu",
+                    pin_memory=pin,
+                )
+                self.staging_cpu_v = torch.empty(
+                    (bs, nkv, max(total_fetch_len, 2048), hd),
+                    dtype=self.cpu_v_buf.dtype,
+                    device="cpu",
+                    pin_memory=pin,
+                )
+
+            offset = 0
+            for b in sorted_blocks:
                 b_start = b * self.block_size
                 b_end = min(self.total_tokens_seen, (b + 1) * self.block_size)
-                fetch_indices.extend(range(b_start, b_end))
+                blen = b_end - b_start
+                self.staging_cpu_k[:, :, offset : offset + blen, :].copy_(
+                    self.cpu_k_buf[:, :, b_start:b_end, :]
+                )
+                self.staging_cpu_v[:, :, offset : offset + blen, :].copy_(
+                    self.cpu_v_buf[:, :, b_start:b_end, :]
+                )
+                offset += blen
 
-            fetch_idx_tensor = torch.tensor(fetch_indices, dtype=torch.long)
-            k_fetched = self.cpu_k_buf[:, :, fetch_idx_tensor, :].to(target_device, non_blocking=True)
-            v_fetched = self.cpu_v_buf[:, :, fetch_idx_tensor, :].to(target_device, non_blocking=True)
+            k_fetched = self.staging_cpu_k[:, :, :total_fetch_len, :].to(target_device, non_blocking=True)
+            v_fetched = self.staging_cpu_v[:, :, :total_fetch_len, :].to(target_device, non_blocking=True)
 
             bytes_in = (k_fetched.nelement() + v_fetched.nelement()) * k_fetched.element_size()
             self.total_bytes_transferred_pcie += bytes_in
@@ -384,6 +432,8 @@ class InfiniGenLayer(DynamicLayer):
         self.total_tokens_seen = 0
         self.cpu_k_buf = None
         self.cpu_v_buf = None
+        self.staging_cpu_k = None
+        self.staging_cpu_v = None
         self.proxy_k_buf = None
         self.gpu_keys = None
         self.gpu_values = None

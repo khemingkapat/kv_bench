@@ -280,6 +280,11 @@ class HeadQCache(Cache):
     def total_quantized_bytes(self) -> int:
         return sum(getattr(layer, "quantized_bytes", 0) for layer in self.layers)
 
+    @property
+    def effective_bits_per_scalar(self) -> float:
+        """Physical bits per KV scalar (2-bit K + rank-4 sidecode + 4-bit V + FP16 scales)."""
+        return 3.25
+
     def get_seq_length(self, layer_idx: int = 0) -> int:
         if layer_idx >= len(self.layers):
             return 0

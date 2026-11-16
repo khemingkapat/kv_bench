@@ -33,7 +33,6 @@ class TestQServeKV4Technique(unittest.TestCase):
         self.assertEqual(technique.group_size, 32)
         self.assertEqual(technique.alpha, 0.5)
         self.assertEqual(technique.block_size, 16)
-        self.assertEqual(technique.compression_ratio, 4.0)
 
         custom = get_technique("qserve_kv4", group_size=64, alpha=0.75, block_size=32)
         self.assertEqual(custom.group_size, 64)
@@ -44,7 +43,7 @@ class TestQServeKV4Technique(unittest.TestCase):
         self.assertEqual(metrics["kv_cache_bits"], 4)
         self.assertEqual(metrics["quant_group_size"], 64)
         self.assertEqual(metrics["smooth_attention_alpha"], 0.75)
-        self.assertEqual(metrics["compression_ratio_vs_bf16"], 4.0)
+        self.assertNotIn("compression_ratio_vs_bf16", metrics)
 
     def test_invalid_parameters_rejected(self):
         with self.assertRaises(ValueError):
@@ -213,7 +212,7 @@ class TestQServeKV4Technique(unittest.TestCase):
             bits_per_scalar=4.0,
         )
         self.assertEqual(diag.overall_retention_ratio, 1.0)
-        self.assertEqual(diag.overall_effective_bitwidth, 4.0)
+        self.assertEqual(diag.overall_effective_bitwidth, 4.5)
 
     def test_pytorch_runner_dry_run_with_qserve_cache(self):
         technique = get_technique("qserve_kv4")

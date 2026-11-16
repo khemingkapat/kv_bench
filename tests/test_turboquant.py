@@ -280,7 +280,7 @@ class TestTurboQuantTechnique(unittest.TestCase):
         self.assertEqual(metrics["v_bits"], 3)
         self.assertTrue(metrics["qjl_v"])
         self.assertFalse(metrics["qjl_k"])
-        self.assertAlmostEqual(metrics["compression_ratio"], 3.657, places=2)
+        self.assertNotIn("compression_ratio", metrics)
         self.assertEqual(metrics["theoretical_bytes_per_token_head"], 140)
         self.assertEqual(metrics["uncompressed_bytes_per_token_head"], 512)
         self.assertGreater(metrics["theoretical_cache_bytes"], 0)
