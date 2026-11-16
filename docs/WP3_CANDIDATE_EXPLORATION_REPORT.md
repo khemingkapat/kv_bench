@@ -11,15 +11,15 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 | WP | Technique | Primary Axis | 32K VRAM (MB) | 32K TPOT (ms) | 32K Host RSS Δ (MB) | 32K Memcpy (B/tok) | PG-19 KL | LongMem KL | NIAH (2K / 4K) | LongMem Pass | Regressions | Profile |
 |:---:|---|:---:|---:|---:|---:|---:|---:|---:|:---:|:---:|---:|---|
 | WP2 | **PyTorch SDPA Baseline** | — | **13225** | **29.2** | **1082** | **0** | — | — | — | **25/99** | **0** | [`baseline_pytorch_16gb.json`](../results/baseline_pytorch_16gb.json) |
-| WP3-1 | **StreamingLLM** | `STRUCTURAL` | 9000 | 15.8 | 5268 | 8266 | — | 5.62 | 100% / 40% | 26/99 | 3 | [Profile](wp3_profiles/streamingllm.md) |
+| WP3-1 | **StreamingLLM** | `STRUCTURAL` | 8712 | 20.9 | 1326 | 8266 | 6.88 | 5.62 | 100% / 40% | 26/99 | 3 | [Profile](wp3_profiles/streamingllm.md) |
 | WP3-2 | **H2O (Heavy-Hitter Oracle)** | `STRUCTURAL` | 9725 | 45.9 | 6874 | 2005976 | 6.55 | 4.01 | 100% / 20% | 22/99 | 4 | [Profile](wp3_profiles/h2o.md) |
 | WP3-3 | **TurboQuant** | `STRUCTURAL` | 10294 | 864.1 | 7529 | 13265 | 11.89 | 9.47 | 100% / 100% | 27/99 | 5 | [Profile](wp3_profiles/turboquant.md) |
 | WP3-4 | **HeadQ** | `STRUCTURAL` | 10109 | 80.9 | 4656 | 8289 | 13.52 | 14.84 | 0% / 0% | 0/99 | 25 | [Profile](wp3_profiles/headq.md) |
 | WP3-5 | **QServe KV4** | `STRUCTURAL` | 10763 | 59.9 | 3629 | 8266 | 10.25 | 7.40 | 100% / 100% | 28/99 | 2 | [Profile](wp3_profiles/qserve_kv4.md) |
 | WP3-6 | **FlexGen-KV** | `SPATIAL` | 8889 | 229.6 | 6565 | 1646964418 | 10.80 | 7.34 | 100% / 100% | 24/99 | 6 | [Profile](wp3_profiles/flexgen_kv.md) |
-| WP3-7 | **ShadowKV** | `SPATIAL` | Pending | Pending | Pending | Pending | — | 3.85 | 100% / 100% | 22/99 | 3 | [Profile](wp3_profiles/shadowkv.md) |
+| WP3-7 | **ShadowKV** | `SPATIAL` | 14233 | 85.3 | 5325 | 67241955 | 5.32 | 3.85 | 100% / 100% | 22/99 | 3 | [Profile](wp3_profiles/shadowkv.md) |
 | WP3-8 | **CacheGen** | `STRUCTURAL` | 10600 | 82.9 | 4536 | 935016151 | 12.87 | 12.58 | 40% / 80% | 16/99 | 11 | [Profile](wp3_profiles/cachegen.md) |
-| WP3-9 | **InfiniGen** | `TEMPORAL` | 15158 | 657.3 | 18552 | 2085318671 | 12.75 | 6.46 | 100% / 100% | 24/99 | 4 | [Profile](wp3_profiles/infinigen.md) |
+| WP3-9 | **InfiniGen** | `TEMPORAL` | 13910 | 219.7 | 20491 | 1829885205 | 11.64 | 6.46 | 100% / 100% | 24/99 | 4 | [Profile](wp3_profiles/infinigen.md) |
 | WP3-10 | **ArkVale** | `SPATIAL` | 9033 | 102.9 | 16614 | 1618383854 | 11.42 | 6.63 | 100% / 100% | 23/99 | 4 | [Profile](wp3_profiles/arkvale.md) |
 | WP3-11 | **EpiCache** | `STRUCTURAL` | 8567 | 30.6 | 2846 | 442264 | 9.86 | 9.00 | 0% / 0% | 10/99 | 17 | [Profile](wp3_profiles/epicache.md) |
 
@@ -29,7 +29,7 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 
 ### WP3-1: StreamingLLM (`STRUCTURAL`) — [Full Profile](wp3_profiles/streamingllm.md)
 - **Mechanism:** StreamingLLM retains a small set of initial 'attention sink' tokens alongside a fixed-size rolling sliding window of the most recent tokens. When the sequence exceeds the combined budget, intermediate tokens between the sinks and the local window are evicted in FIFO order, bounding KV-cache memory to O(1) regardless of prompt length.
-- **Prominent Upside:** **31.9% lower 32K VRAM** (9000 MB); **15.8 ms/tok** decode TPOT (1.84× baseline speed); **26/99 LongMemEval passes** (3 regressions); low LongMemEval KL (**5.62**)
+- **Prominent Upside:** **34.1% lower 32K VRAM** (8712 MB); **20.9 ms/tok** decode TPOT (1.39× baseline speed); **26/99 LongMemEval passes** (3 regressions); low LongMemEval KL (**5.62**)
 - **Primary Trade-Off:** NIAH drops to **100% @2K / 40% @4K**
 
 ### WP3-2: H2O (Heavy-Hitter Oracle) (`STRUCTURAL`) — [Full Profile](wp3_profiles/h2o.md)
@@ -60,7 +60,7 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 ### WP3-7: ShadowKV (`SPATIAL`) — [Full Profile](wp3_profiles/shadowkv.md)
 - **Mechanism:** ShadowKV keeps low-rank SVD-compressed Key representations and sparse outlier channels on the GPU for fast chunk-level relevance scoring, while offloading full-precision Values to CPU RAM and fetching only the top-k relevant chunks on demand during decode.
 - **Prominent Upside:** **100% NIAH** exact-match retrieval (2K & 4K); low LongMemEval KL (**3.85**)
-- **Primary Trade-Off:** 32K hardware sweep is pending; LongMemEval **22/99** (3 regressions vs. 25 baseline)
+- **Primary Trade-Off:** **+7.6% higher 32K VRAM** (14233 MB vs. 13225 MB baseline); 32K decode TPOT is **2.92× slower** (85.3 ms/tok); LongMemEval **22/99** (3 regressions vs. 25 baseline)
 
 ### WP3-8: CacheGen (`STRUCTURAL`) — [Full Profile](wp3_profiles/cachegen.md)
 - **Mechanism:** CacheGen encodes KV tensors using anchor-delta compression (storing periodic anchor tokens at higher precision and encoding intermediate tokens as deltas) combined with layer-tiered bit allocation across shallow, middle, and deep transformer layers.
@@ -70,7 +70,7 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 ### WP3-9: InfiniGen (`TEMPORAL`) — [Full Profile](wp3_profiles/infinigen.md)
 - **Mechanism:** InfiniGen speculatively prefetches important KV blocks from CPU memory one layer ahead by using low-rank key proxies and threshold-based importance prediction to overlap host-to-device transfers with layer computation.
 - **Prominent Upside:** **100% NIAH** exact-match retrieval (2K & 4K)
-- **Primary Trade-Off:** **+14.6% higher 32K VRAM** (15158 MB vs. 13225 MB baseline); 32K decode TPOT is **22.53× slower** (657.3 ms/tok); LongMemEval **24/99** (4 regressions vs. 25 baseline); high PG-19 KL (**12.75**)
+- **Primary Trade-Off:** **+5.2% higher 32K VRAM** (13910 MB vs. 13225 MB baseline); 32K decode TPOT is **7.53× slower** (219.7 ms/tok); LongMemEval **24/99** (4 regressions vs. 25 baseline)
 
 ### WP3-10: ArkVale (`SPATIAL`) — [Full Profile](wp3_profiles/arkvale.md)
 - **Mechanism:** ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and maintains Axis-Aligned Bounding Box (AABB) geometric digests on the GPU to recall and page-in only the relevant KV pages per query.
@@ -94,6 +94,6 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 
 ## 4. Key Takeaways for WP-4 (3-Axis Co-Optimization)
 
-1. **Lowest Memory & Fastest Decode Come from Structural Eviction, at the Cost of NIAH Recall:** `EpiCache` achieves the lowest 32K VRAM (**8567 MB**) and `StreamingLLM` achieves the fastest 32K decode (**15.8 ms/tok**), but both lose non-local needles at 4K.
+1. **Lowest Memory & Fastest Decode Come from Structural Eviction, at the Cost of NIAH Recall:** `EpiCache` achieves the lowest 32K VRAM (**8567 MB**) and `StreamingLLM` achieves the fastest 32K decode (**20.9 ms/tok**), but both lose non-local needles at 4K.
 2. **4-Bit KV Quantization Preserves Full-Context Accuracy:** `QServe KV4` leads LongMemEval (**28/99**, 2 regressions) with **100% NIAH**, establishing 4-bit group quantization as the safest *Structural* baseline for WP-4.
 3. **Spatial Offloading Must Control PCIe & Auxiliary Buffer Overhead:** Offloading techniques (`FlexGen-KV`, `ArkVale`, `ShadowKV`, `InfiniGen`) preserve 100% NIAH at 2K/4K, but high PCIe transfer volume or auxiliary prefetch buffers can erode VRAM or TPOT gains if left uncoordinated.

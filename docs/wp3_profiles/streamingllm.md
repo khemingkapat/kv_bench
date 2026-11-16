@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `streamingllm_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`c329edff7e83…`) | `streamingllm_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`fd5ddd1381cf…`) | `streamingllm_niah_pytorch_16gb.json`: `UNMANIFESTED` (`5f01cee56d9e…`)
+**Artifact Provenance (SHA-256):** `streamingllm_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`05bd5adb4d50…`) | `streamingllm_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`fd5ddd1381cf…`) | `streamingllm_niah_pytorch_16gb.json`: `UNMANIFESTED` (`5f01cee56d9e…`)
 
 ---
 
@@ -20,17 +20,29 @@ StreamingLLM retains a small set of initial 'attention sink' tokens alongside a 
 
 | Context | Status | Peak Alloc (MB) | Peak Reserved (MB) | Warm TTFT (s) | Cold TTFT (s) | TPOT Mean (ms) | TPOT P95 (ms) | Throughput (tok/s) | Host RSS Δ (MB) | Memcpy (B/tok) |
 |---:|:---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 512 | SUCCESS | 7992.5 | 8098.0 | 0.038 | 0.000 | 15.49 | 15.49 | 64.56 | 3521.8 | 201.8 |
-| 1024 | SUCCESS | 8285.9 | 8404.0 | 0.070 | 0.000 | 15.25 | 15.25 | 65.56 | 3521.8 | 329.8 |
-| 2048 | SUCCESS | 8855.5 | 8924.0 | 0.154 | 0.000 | 16.03 | 16.03 | 62.38 | 3752.6 | 585.8 |
-| 4096 | SUCCESS | 9000.1 | 9224.0 | 0.337 | 0.000 | 16.03 | 16.03 | 62.38 | 3858.5 | 1097.8 |
-| 8192 | SUCCESS | 9000.1 | 9224.0 | 0.705 | 0.000 | 16.06 | 16.06 | 62.25 | 4057.9 | 2121.8 |
-| 16384 | SUCCESS | 9000.1 | 9404.0 | 1.493 | 0.000 | 16.01 | 16.01 | 62.46 | 4461.9 | 4169.8 |
-| 32768 | SUCCESS | 9000.3 | 9404.0 | 3.010 | 0.000 | 15.82 | 15.82 | 63.21 | 5267.5 | 8265.8 |
+| 512 | SUCCESS | 7911.7 | 7998.0 | 0.039 | 0.000 | 21.11 | 21.11 | 47.37 | 1104.6 | 201.8 |
+| 1024 | SUCCESS | 8133.0 | 8164.0 | 0.070 | 0.000 | 20.74 | 20.74 | 48.22 | 1104.7 | 329.8 |
+| 2048 | SUCCESS | 8566.9 | 8624.0 | 0.154 | 0.000 | 21.46 | 21.46 | 46.61 | 1149.9 | 585.8 |
+| 4096 | SUCCESS | 8711.5 | 8924.0 | 0.339 | 0.000 | 21.20 | 21.20 | 47.18 | 1048.2 | 1097.8 |
+| 8192 | SUCCESS | 8711.5 | 9104.0 | 0.705 | 0.000 | 21.23 | 21.23 | 47.09 | 1186.2 | 2121.8 |
+| 16384 | SUCCESS | 8711.6 | 9104.0 | 1.441 | 0.000 | 20.90 | 20.90 | 47.84 | 1233.8 | 4169.8 |
+| 32768 | SUCCESS | 8711.7 | 9124.0 | 2.905 | 0.000 | 20.95 | 20.95 | 47.73 | 1326.5 | 8265.8 |
 
 ![StreamingLLM Hardware Sweep](../figures/wp3/streamingllm/hardware_sweep.png)
 
 ### 2.2 KL Divergence & Logit Fidelity
+
+#### PG-19 Hardware Sweep
+
+| Context | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
+|---:|---:|---:|---:|
+| 512 | 0.0000 | 0.0000 | 100.00 |
+| 1024 | 0.0000 | 0.0000 | 100.00 |
+| 2048 | 11.1998 | 15.4249 | 17.19 |
+| 4096 | 3.2542 | 15.1387 | 75.00 |
+| 8192 | 9.8077 | 15.4249 | 29.69 |
+| 16384 | 10.5379 | 15.4249 | 25.00 |
+| 32768 | 13.3844 | 15.4249 | 6.25 |
 
 #### LongMemEval Conversational Sweep
 
@@ -100,11 +112,11 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), StreamingLLM s
 
 ### Pros
 
-- Reduces peak allocated VRAM at 32K by **31.9%** (9000 MB vs. 13225 MB baseline).
-- Decode latency at 32K is faster or at parity with baseline (**15.8 ms/tok** vs. 29.2 ms/tok, 1.84x speed).
-- Low LongMemEval logit drift (mean KL = **5.62**, Top-1 = **60.8%**).
+- Reduces peak allocated VRAM at 32K by **34.1%** (8712 MB vs. 13225 MB baseline).
+- Decode latency at 32K is faster or at parity with baseline (**20.9 ms/tok** vs. 29.2 ms/tok, 1.39x speed).
 - Matches or exceeds baseline LongMemEval pass count (**26/99** vs. 25/99 baseline) with **3** compression-induced quality regressions.
 
 ### Cons
 
+- Elevated PG-19 logit divergence (mean KL = **6.88**, Top-1 = **50.4%**).
 - NIAH retrieval drops to **40%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]`), confirming loss of early/non-local needle tokens.

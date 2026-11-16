@@ -2,7 +2,7 @@
 
 **Primary Axis:** `TEMPORAL` | **All Axes:** `SPATIAL, TEMPORAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `VERIFIED` (`51ce698454d1…`) | `infinigen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`c3d9ece137f4…`) | `infinigen_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`3edd0b98a4cc…`)
+**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`85ad425a18e7…`) | `infinigen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`c3d9ece137f4…`) | `infinigen_niah_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`3edd0b98a4cc…`)
 
 ---
 
@@ -20,13 +20,13 @@ InfiniGen speculatively prefetches important KV blocks from CPU memory one layer
 
 | Context | Status | Peak Alloc (MB) | Peak Reserved (MB) | Warm TTFT (s) | Cold TTFT (s) | TPOT Mean (ms) | TPOT P95 (ms) | Throughput (tok/s) | Host RSS Δ (MB) | Memcpy (B/tok) |
 |---:|:---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 512 | SUCCESS | 7982.1 | 7998.0 | 0.049 | 0.000 | 46.16 | 46.16 | 21.66 | 5816.9 | 29696601.2 |
-| 1024 | SUCCESS | 8273.5 | 8400.0 | 0.086 | 0.000 | 55.62 | 55.62 | 17.98 | 10586.8 | 55804006.9 |
-| 2048 | SUCCESS | 8720.7 | 8822.0 | 0.193 | 0.000 | 71.88 | 71.88 | 13.91 | 19738.4 | 86615915.8 |
-| 4096 | FAILED | 0.0 | 0.0 | 0.000 | 0.000 | 0.00 | 0.00 | 0.00 | 0.0 | 0.0 |
-| 8192 | FAILED | 0.0 | 0.0 | 0.000 | 0.000 | 0.00 | 0.00 | 0.00 | 0.0 | 0.0 |
-| 16384 | SUCCESS | 11871.8 | 12444.0 | 3.606 | 0.000 | 352.46 | 352.46 | 2.84 | 13334.8 | 888775168.8 |
-| 32768 | SUCCESS | 15158.1 | 15774.0 | 14.158 | 0.000 | 657.32 | 657.32 | 1.52 | 18551.8 | 2085318671.2 |
+| 512 | SUCCESS | 7947.1 | 7958.0 | 0.071 | 0.000 | 45.05 | 45.05 | 22.20 | 2122.6 | 29696601.2 |
+| 1024 | SUCCESS | 8170.0 | 8302.0 | 0.109 | 0.000 | 61.64 | 61.64 | 16.22 | 2202.1 | 55804006.9 |
+| 2048 | SUCCESS | 8610.8 | 8740.0 | 0.228 | 0.000 | 64.66 | 64.66 | 15.47 | 2786.2 | 107520416.0 |
+| 4096 | SUCCESS | 8941.6 | 9320.0 | 0.516 | 0.000 | 86.60 | 86.60 | 11.55 | 3953.7 | 187541319.2 |
+| 8192 | SUCCESS | 9603.1 | 10200.0 | 1.344 | 0.000 | 111.55 | 111.55 | 8.96 | 6309.9 | 324091471.4 |
+| 16384 | SUCCESS | 10959.9 | 11774.0 | 4.070 | 0.000 | 161.79 | 161.79 | 6.18 | 11049.3 | 710706859.1 |
+| 32768 | SUCCESS | 13910.0 | 15474.0 | 15.372 | 0.000 | 219.68 | 219.68 | 4.55 | 20490.6 | 1829885205.2 |
 
 ![InfiniGen Hardware Sweep](../figures/wp3/infinigen/hardware_sweep.png)
 
@@ -38,9 +38,11 @@ InfiniGen speculatively prefetches important KV blocks from CPU memory one layer
 |---:|---:|---:|---:|
 | 512 | 12.7462 | 15.4200 | 9.38 |
 | 1024 | 8.5429 | 15.4243 | 37.50 |
-| 2048 | 14.2447 | 15.4249 | 0.00 |
-| 16384 | 14.0537 | 15.4249 | 0.00 |
-| 32768 | 14.1768 | 15.4249 | 1.56 |
+| 2048 | 13.3156 | 15.4249 | 3.12 |
+| 4096 | 12.5069 | 15.2393 | 7.81 |
+| 8192 | 9.8666 | 15.4249 | 25.00 |
+| 16384 | 10.9649 | 15.4249 | 18.75 |
+| 32768 | 13.5198 | 15.4249 | 4.69 |
 
 #### LongMemEval Conversational Sweep
 
@@ -114,8 +116,8 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), InfiniGen scor
 
 ### Cons
 
-- Increases peak allocated VRAM at 32K by **+14.6%** (15158 MB vs. 13225 MB baseline) due to auxiliary metadata/prefetch buffers.
-- Decode latency at 32K is **22.53x slower** than baseline (**657.3 ms/tok** vs. 29.2 ms/tok).
-- High host-device transfer volume at 32K (**2085318671 B/tok**, Host RSS Δ = **18552 MB**).
-- Elevated PG-19 logit divergence (mean KL = **12.75**, Top-1 = **9.7%**).
+- Increases peak allocated VRAM at 32K by **+5.2%** (13910 MB vs. 13225 MB baseline) due to auxiliary metadata/prefetch buffers.
+- Decode latency at 32K is **7.53x slower** than baseline (**219.7 ms/tok** vs. 29.2 ms/tok).
+- High host-device transfer volume at 32K (**1829885205 B/tok**, Host RSS Δ = **20491 MB**).
+- Elevated PG-19 logit divergence (mean KL = **11.64**, Top-1 = **15.2%**).
 - Trails baseline LongMemEval pass count (**24/99** vs. 25/99 baseline) with **4** quality regressions (mean KV retention ratio = **1.00**).
