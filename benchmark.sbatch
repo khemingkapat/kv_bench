@@ -49,6 +49,9 @@ TECHNIQUE="${TECHNIQUE:-turboquant}"
 ENGINE="${ENGINE:-pytorch}"
 RUN_FULL_SWEEP="${RUN_FULL_SWEEP:-1}"
 SKIP_HARDWARE_SWEEPS="${SKIP_HARDWARE_SWEEPS:-0}"
+SKIP_VERIFY="${SKIP_VERIFY:-0}"
+SKIP_LONGMEM="${SKIP_LONGMEM:-0}"
+SKIP_NIAH="${SKIP_NIAH:-0}"
 CONTEXTS="512 1024 2048 4096 8192 16384 32768"
 CONCURRENT_CONTEXTS="1024 2048 4096 8192"
 CONCURRENT_USERS="1 4 8 12 16"
@@ -72,6 +75,17 @@ if suite_name in suites:
     print("SUITE_TECH_LIST=(" + " ".join(shlex.quote(t) for t in techs) + ")")
     if "skip_hardware_sweeps" in cfg:
         print("SKIP_HARDWARE_SWEEPS=" + ("1" if cfg["skip_hardware_sweeps"] else "0"))
+    if "skip_verify" in cfg or "run_verify" in cfg:
+        skip_v = cfg.get("skip_verify", not cfg.get("run_verify", True))
+        print("SKIP_VERIFY=" + ("1" if skip_v else "0"))
+    if "skip_longmem" in cfg or "run_longmem" in cfg:
+        skip_lm = cfg.get("skip_longmem", not cfg.get("run_longmem", True))
+        print("SKIP_LONGMEM=" + ("1" if skip_lm else "0"))
+    if "skip_niah" in cfg or "run_niah" in cfg:
+        skip_ni = cfg.get("skip_niah", not cfg.get("run_niah", True))
+        print("SKIP_NIAH=" + ("1" if skip_ni else "0"))
+    if "skip_existing" in cfg:
+        print("SKIP_EXISTING=" + ("1" if cfg["skip_existing"] else "0"))
     if "force_longmem_ref" in cfg:
         print("FORCE_LONGMEM_REF=" + ("1" if cfg["force_longmem_ref"] else "0"))
     if "contexts" in cfg:
@@ -198,7 +212,9 @@ if [[ "$ENGINE" == "pytorch" ]]; then
         if (
             set -e
             VERIFY_OUT="results/verify_${CURRENT_TECH}_pytorch_16gb.json"
-            if [[ "$SKIP_EXISTING" == "1" && -f "$VERIFY_OUT" ]]; then
+            if [[ "$SKIP_VERIFY" == "1" ]]; then
+                echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0 skipped (SKIP_VERIFY=1)"
+            elif [[ "$SKIP_EXISTING" == "1" && -f "$VERIFY_OUT" ]]; then
                 echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0 skipped (exists: $VERIFY_OUT)"
             else
                 echo ">> [PyTorch Technique: $CURRENT_TECH] Step 0: Verification (128 ctx, 16 tokens)..."
@@ -232,7 +248,9 @@ if [[ "$ENGINE" == "pytorch" ]]; then
                 fi
 
                 LM_OUT="results/${CURRENT_TECH}_longmem_pytorch_16gb.json"
-                if [[ "$SKIP_EXISTING" == "1" && -f "$LM_OUT" ]]; then
+                if [[ "$SKIP_LONGMEM" == "1" ]]; then
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2 skipped (SKIP_LONGMEM=1)"
+                elif [[ "$SKIP_EXISTING" == "1" && -f "$LM_OUT" ]]; then
                     echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2 skipped (exists: $LM_OUT)"
                 else
                     check_longmem_dataset
@@ -253,7 +271,9 @@ if [[ "$ENGINE" == "pytorch" ]]; then
                 fi
 
                 NIAH_OUT="results/${CURRENT_TECH}_niah_pytorch_16gb.json"
-                if [[ "$SKIP_EXISTING" == "1" && -f "$NIAH_OUT" ]]; then
+                if [[ "$SKIP_NIAH" == "1" ]]; then
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3 skipped (SKIP_NIAH=1)"
+                elif [[ "$SKIP_EXISTING" == "1" && -f "$NIAH_OUT" ]]; then
                     echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3 skipped (exists: $NIAH_OUT)"
                 else
                     echo ">> [PyTorch Technique: $CURRENT_TECH] Step 3: Opt-In Mechanistic 2D NIAH Sweep..."

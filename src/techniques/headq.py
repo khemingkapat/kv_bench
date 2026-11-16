@@ -346,19 +346,6 @@ class HeadQTechnique(Technique):
         self.sidecode_bits = int(sidecode_bits)
         self.block_size = int(block_size)
 
-    @property
-    def compression_ratio(self) -> float:
-        """Compression ratio relative to standard 16-bit (FP16/BF16) cache.
-
-        For standard head_dim=128:
-          - Standard KV cache: 16 bits (Key) + 16 bits (Value) = 32 bits per element.
-          - HeadQ KV cache: 2 bits (Key) + (4 * 4 / 128 = 0.125) sidecode bits + 4 bits (Value) = 6.125 bits.
-          - Compression ratio: 32 / 6.125 = ~5.22x.
-        """
-        effective_key_bits = self.key_bits + (self.rank * self.sidecode_bits) / 128.0
-        effective_kv_bits = effective_key_bits + self.val_bits
-        return round(32.0 / effective_kv_bits, 2)
-
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch constructor."""
         del context_length, max_tokens
@@ -408,7 +395,6 @@ class HeadQTechnique(Technique):
             "pca_rank": self.rank,
             "sidecode_bits": self.sidecode_bits,
             "effective_key_bits": effective_key_bits,
-            "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "model_visible_distortion_aware": True,
             "quantized_cache_bytes": quantized_bytes,

@@ -185,11 +185,6 @@ class EpiCacheTechnique(Technique):
         self.layer_sensitivity_alpha = float(layer_sensitivity_alpha)
         self.block_size = int(block_size)
 
-    @property
-    def compression_ratio(self) -> float:
-        """Peak GPU VRAM footprint compression ratio relative to uncompressed cache."""
-        return 3.8
-
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch constructor."""
         del context_length, max_tokens
@@ -236,7 +231,6 @@ class EpiCacheTechnique(Technique):
             "num_episodes": self.num_episodes,
             "episode_budget_tokens": self.episode_budget_tokens,
             "layer_sensitivity_alpha": self.layer_sensitivity_alpha,
-            "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "active_retained_tokens": retained_tokens,
             "block_wise_prefill_active": True,

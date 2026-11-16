@@ -227,11 +227,6 @@ class ArkValeTechnique(Technique):
         self.exempt_early_layers = int(exempt_early_layers)
         self.block_size = int(block_size)
 
-    @property
-    def compression_ratio(self) -> float:
-        """GPU VRAM footprint reduction ratio relative to uncompressed cache."""
-        return 4.5
-
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch constructor."""
         del context_length, max_tokens
@@ -288,7 +283,6 @@ class ArkValeTechnique(Technique):
             "page_size": self.page_size,
             "active_pages_budget": self.active_pages_budget,
             "exempt_early_layers": self.exempt_early_layers,
-            "compression_ratio_vs_bf16": self.compression_ratio,
             "block_size": self.block_size,
             "pcie_transfer_bytes": pcie_bytes,
             "recalled_pages": recalled_pages,

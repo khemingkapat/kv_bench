@@ -392,6 +392,11 @@ class CacheGenCache(Cache):
     def total_compressed_bytes(self) -> int:
         return sum(getattr(layer, "compressed_bytes", 0) for layer in self.layers)
 
+    @property
+    def effective_bits_per_scalar(self) -> float:
+        """Physical bits per KV scalar (layer-tiered deltas + FP16 anchors + scales)."""
+        return 6.392
+
     def get_seq_length(self, layer_idx: int = 0) -> int:
         if layer_idx >= len(self.layers):
             return 0

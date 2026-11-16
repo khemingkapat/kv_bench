@@ -31,7 +31,7 @@ class TestHeadQTechnique(unittest.TestCase):
         technique = get_technique("headq")
         self.assertIsInstance(technique, HeadQTechnique)
         self.assertEqual(technique.axes, Axis.STRUCTURAL)
-        self.assertGreater(technique.compression_ratio, 4.0)
+        self.assertFalse(hasattr(technique, "compression_ratio"))
 
     def test_defaults_and_custom_parameters(self):
         technique = get_technique("headq")
@@ -179,7 +179,7 @@ class TestHeadQTechnique(unittest.TestCase):
             bits_per_scalar=3.1,
         )
         self.assertEqual(diag.overall_retention_ratio, 1.0)
-        self.assertEqual(diag.overall_effective_bitwidth, 3.1)
+        self.assertEqual(diag.overall_effective_bitwidth, 3.25)
 
         runner = PyTorchRunner(
             model_name_or_path="Qwen/Qwen3-4B-Instruct-2507",

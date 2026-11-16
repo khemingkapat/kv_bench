@@ -147,6 +147,9 @@ def inspect_sample_diagnostic(
     sample_id = sample_meta.get("id", "unknown")
     task_type = sample_meta.get("task_type", "unknown")
     total_tokens = len(prompt_token_ids)
+    cache_bits = getattr(cache, "effective_bits_per_scalar", None)
+    if isinstance(cache_bits, (int, float)) and not isinstance(cache_bits, bool):
+        bits_per_scalar = float(cache_bits)
 
     # 1. Extract layer-wise active token positions
     layer_positions = extract_active_positions_per_layer(cache, total_tokens)

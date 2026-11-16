@@ -290,6 +290,11 @@ class QServeKVCache(Cache):
     def total_quantized_bytes(self) -> int:
         return sum(getattr(layer, "quantized_bytes", 0) for layer in self.layers)
 
+    @property
+    def effective_bits_per_scalar(self) -> float:
+        """Physical bits per KV scalar including FP16 group scales."""
+        return round(4.0 + 16.0 / max(1, self.group_size), 4)
+
     def get_seq_length(self, layer_idx: int = 0) -> int:
         if layer_idx >= len(self.layers):
             return 0

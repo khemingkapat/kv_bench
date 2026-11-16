@@ -27,7 +27,7 @@ class TestCacheGenTechnique(unittest.TestCase):
         technique = get_technique("cachegen")
         self.assertIsInstance(technique, CacheGenTechnique)
         self.assertEqual(technique.axes, Axis.STRUCTURAL | Axis.SPATIAL)
-        self.assertGreater(technique.compression_ratio, 3.0)
+        self.assertFalse(hasattr(technique, "compression_ratio"))
 
     def test_defaults_and_custom_parameters(self):
         technique = get_technique("cachegen")
@@ -150,7 +150,7 @@ class TestCacheGenTechnique(unittest.TestCase):
             bits_per_scalar=8.0,
         )
         self.assertEqual(diag.overall_retention_ratio, 1.0)
-        self.assertEqual(diag.overall_effective_bitwidth, 8.0)
+        self.assertEqual(diag.overall_effective_bitwidth, 6.39)
 
         runner = PyTorchRunner(
             model_name_or_path="Qwen/Qwen3-4B-Instruct-2507",

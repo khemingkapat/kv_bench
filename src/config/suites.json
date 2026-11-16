@@ -52,5 +52,15 @@
     "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
     "eval_contexts": [512, 1024, 2048, 4096, 8192, 16384],
     "niah_contexts": [2048, 4096]
+  },
+  "wp3_fix_rerun": {
+    "techniques": ["streamingllm", "infinigen"],
+    "skip_hardware_sweeps": false,
+    "skip_verify": true,
+    "skip_longmem": true,
+    "skip_niah": true,
+    "skip_existing": false,
+    "force_longmem_ref": false,
+    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768]
   }
 }

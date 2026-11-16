@@ -152,16 +152,11 @@ class TurboQuantTechnique(Technique):
             theo_bytes = 8 * 36 * total_seq_len * 140
             phys_bytes = theo_bytes
 
-        # Baseline BF16 is 512 bytes per token per head (256B Key + 256B Value for d=128)
-        # TurboQuant is 140 bytes per token per head (68B Key + 72B Value)
-        compression_ratio = round(512.0 / 140.0, 3)
-
         return {
             "k_bits": self.k_bits,
             "v_bits": self.v_bits,
             "qjl_v": True,
             "qjl_k": False,
-            "compression_ratio": compression_ratio,
             "theoretical_bytes_per_token_head": 140,
             "uncompressed_bytes_per_token_head": 512,
             "physical_cache_bytes": phys_bytes,
