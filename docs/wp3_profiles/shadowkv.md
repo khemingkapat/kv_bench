@@ -108,7 +108,7 @@ Tested with svd_rank=160, chunk_size=8, topk_chunks=256, and outlier_ratio=0.003
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), ShadowKV scores **22/99** with **3** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), ShadowKV records **22/99** (**3** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,3 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), ShadowKV score
 - Increases peak allocated VRAM at 32K by **+7.6%** (14233 MB vs. 13225 MB baseline) due to auxiliary metadata/prefetch buffers.
 - Decode latency at 32K is **2.92x slower** than baseline (**85.3 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**67241955 B/tok**, Host RSS Δ = **5325 MB**).
-- Trails baseline LongMemEval pass count (**22/99** vs. 25/99 baseline) with **3** quality regressions (mean KV retention ratio = **1.00**).

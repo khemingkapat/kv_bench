@@ -562,20 +562,16 @@ def build_diagnostic_narrative(
         tot = sum(r["extra"].get("diag_total_inspected", 0) for r in lm_res)
         regs = sum(r["extra"].get("diag_quality_regression_count", 0) for r in lm_res)
         ret = float(np.mean([r["extra"].get("diag_mean_overall_retention_ratio", 0.0) for r in lm_res]))
-        if passes >= b_lm_pass:
-            pros.append(
-                f"Matches or exceeds baseline LongMemEval pass count (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} baseline) "
-                f"with **{regs}** compression-induced quality regressions."
-            )
-        else:
+        if passes < b_lm_pass * 0.7:
             cons.append(
-                f"Trails baseline LongMemEval pass count (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} baseline) "
-                f"with **{regs}** quality regressions (mean KV retention ratio = **{ret:.2f}**)."
+                f"Severe LongMemEval collapse (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} baseline; "
+                f"**{regs}** quality regressions, mean KV retention ratio = **{ret:.2f}**)."
             )
         reasons.append(
-            f"On LongMemEval ({tot} inspected samples across 512–16,384 tokens), {tech['name']} scores **{passes}/{tot}** "
-            f"with **{regs}** quality regressions relative to the uncompressed baseline ({b_lm_pass}/{b_lm_tot}) and "
-            f"a mean token retention ratio of **{ret:.2f}**."
+            f"On WP-3 LongMemEval ({tot} raw substring evaluations across 512–16,384 tokens), {tech['name']} records **{passes}/{tot}** "
+            f"(**{regs}** regressions vs. {b_lm_pass}/{b_lm_tot} baseline; mean retention ratio = **{ret:.2f}**). "
+            "*Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, "
+            "32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*"
         )
 
     return "\n\n".join(reasons), pros, cons
@@ -809,9 +805,9 @@ def plot_overview_figures(summaries: list[dict[str, Any]], base_hw: list[dict], 
             color="#666666",
             bbox={"boxstyle": "round,pad=0.3", "facecolor": "#f8f9fa", "edgecolor": "#cccccc"},
         )
-    ax.set_title("WP-3 Pareto Trade-Off: 32K Peak VRAM vs. LongMemEval Pass Count")
+    ax.set_title("WP-3 Trade-Off: 32K Peak VRAM vs. Raw LongMemEval Passes (Collapse-Only)*")
     ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
-    ax.set_ylabel("LongMemEval Passed Samples (out of 99) — Higher is Better")
+    ax.set_ylabel("Raw Substring LongMemEval Passes (out of 99; collapse-only)*")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8.5, loc="lower left")
     fig.tight_layout()
@@ -867,10 +863,10 @@ def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[
             caveat_parts.append(f"NIAH drops to **{s['niah_2k']:.0f}% @2K / {s['niah_4k']:.0f}% @4K**")
 
     if s["lm_pass"] is not None and s["lm_tot"] is not None:
-        if s["lm_pass"] >= b_pass:
-            upside_parts.append(f"**{s['lm_pass']}/{s['lm_tot']} LongMemEval passes** ({s['lm_reg']} regressions)")
-        else:
-            caveat_parts.append(f"LongMemEval **{s['lm_pass']}/{s['lm_tot']}** ({s['lm_reg']} regressions vs. {b_pass} baseline)")
+        if s["lm_pass"] < b_pass * 0.7:
+            caveat_parts.append(
+                f"LongMemEval collapse (**{s['lm_pass']}/{s['lm_tot']}** vs. {b_pass} baseline; {s['lm_reg']} regressions)"
+            )
 
     if s["lm_kl"] is not None and s["lm_kl"] < 6.0:
         upside_parts.append(f"low LongMemEval KL (**{s['lm_kl']:.2f}**)")
@@ -896,6 +892,15 @@ def write_executive_report(summaries: list[dict[str, Any]], base_hw: list[dict],
         "Note on theoretical vs. empirical VRAM: because unmodified FP16 model weights and runtime buffers occupy ~7.5 GiB fixed VRAM, "
         "a 4× KV-cache reduction translates to ~18–35% total process VRAM savings at 32K context. "
         "Fine-grained tables, per-capability breakdowns, and `matplotlib` figures live in [`docs/wp3_profiles/`](wp3_profiles/).",
+        "",
+        "> [!NOTE]",
+        "> **LongMemEval Methodology Caveat (WP-3):** Raw `LongMem Pass` counts below (`X/99`) reflect the WP-3 substring-graded, "
+        "raw-prompt (non-chat-templated), `max_tokens=32`, 6-tier overlapping harness. Post-hoc audit confirmed that small apparent leads "
+        "over Baseline (`25/99`) at 8K (`QServe KV4 28/99`, `TurboQuant 27/99`, `StreamingLLM 26/99`) stem from substring false positives/negatives, "
+        "refusal-boundary flips on 7 deciding questions, and front-truncation of long contexts. Accordingly, WP-3 LongMemEval counts are "
+        "interpreted **strictly for catastrophic-collapse detection** (`HeadQ 0/99`, `EpiCache 10/99`, `CacheGen 16/99`), while structural "
+        "fidelity ranking for WP-4 is anchored on **2D NIAH exact-match retrieval** and **PG-19 / LongMem KL divergence**. "
+        "A dedicated harness overhaul (single-pass native length at 32K, chat template, `max_tokens=128`, decoupled offline grading) is tracked as a follow-up.",
         "",
         "---",
         "",
@@ -942,7 +947,11 @@ def write_executive_report(summaries: list[dict[str, Any]], base_hw: list[dict],
     completed_hw = [s for s in summaries if s["vram_32k"] is not None]
     min_vram = min(completed_hw, key=lambda x: x["vram_32k"])
     fastest_tpot = min(completed_hw, key=lambda x: x["tpot_32k"])
-    best_lm = max([s for s in summaries if s["lm_pass"] is not None], key=lambda x: x["lm_pass"])
+    niah_perfect_struct = [
+        s for s in completed_hw
+        if s["primary_axis"] == "STRUCTURAL" and s["niah_2k"] == 100.0 and s["niah_4k"] == 100.0
+    ]
+    best_struct = min(niah_perfect_struct, key=lambda x: x["tpot_32k"]) if niah_perfect_struct else completed_hw[0]
 
     lines.extend([
         "---",
@@ -960,9 +969,10 @@ def write_executive_report(summaries: list[dict[str, Any]], base_hw: list[dict],
         f"1. **Lowest Memory & Fastest Decode Come from Structural Eviction, at the Cost of NIAH Recall:** "
         f"`{min_vram['name']}` achieves the lowest 32K VRAM (**{min_vram['vram_32k']:.0f} MB**) and `{fastest_tpot['name']}` "
         f"achieves the fastest 32K decode (**{fastest_tpot['tpot_32k']:.1f} ms/tok**), but both lose non-local needles at 4K.",
-        f"2. **4-Bit KV Quantization Preserves Full-Context Accuracy:** "
-        f"`{best_lm['name']}` leads LongMemEval (**{best_lm['lm_pass']}/{best_lm['lm_tot']}**, {best_lm['lm_reg']} regressions) "
-        f"with **100% NIAH**, establishing 4-bit group quantization as the safest *Structural* baseline for WP-4.",
+        f"2. **4-Bit KV Quantization Preserves Full-Context Recall Without Catastrophic Overhead:** "
+        f"`{best_struct['name']}` preserves **100% NIAH** exact-match retrieval (2K & 4K) with **{best_struct['vram_32k']:.0f} MB** 32K VRAM "
+        f"and **{best_struct['tpot_32k']:.1f} ms/tok** TPOT (fastest among 100%-NIAH structural methods), establishing 4-bit group quantization "
+        f"as the safest *Structural* baseline for WP-4.",
         "3. **Spatial Offloading Must Control PCIe & Auxiliary Buffer Overhead:** "
         "Offloading techniques (`FlexGen-KV`, `ArkVale`, `ShadowKV`, `InfiniGen`) preserve 100% NIAH at 2K/4K, "
         "but high PCIe transfer volume or auxiliary prefetch buffers can erode VRAM or TPOT gains if left uncoordinated.",

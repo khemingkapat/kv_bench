@@ -108,13 +108,12 @@ Tested with 4 sink tokens and a 2,048-token sliding window (2,052 effective toke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 40%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), StreamingLLM scores **26/99** with **3** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **0.68**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), StreamingLLM records **26/99** (**3** regressions vs. 25/99 baseline; mean retention ratio = **0.68**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **34.1%** (8712 MB vs. 13225 MB baseline).
 - Decode latency at 32K is faster or at parity with baseline (**20.9 ms/tok** vs. 29.2 ms/tok, 1.39x speed).
-- Matches or exceeds baseline LongMemEval pass count (**26/99** vs. 25/99 baseline) with **3** compression-induced quality regressions.
 
 ### Cons
 

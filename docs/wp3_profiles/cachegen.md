@@ -108,7 +108,7 @@ Tested with anchor_group_size=10, shallow_bits=8, mid_bits=4, and deep_bits=2. A
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 40%, 4096: 80%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), CacheGen scores **16/99** with **11** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), CacheGen records **16/99** (**11** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,4 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), CacheGen score
 - High host-device transfer volume at 32K (**935016151 B/tok**, Host RSS Δ = **4536 MB**).
 - Elevated PG-19 logit divergence (mean KL = **12.87**, Top-1 = **6.2%**).
 - NIAH retrieval drops to **80%** at 4,096 tokens (failing at depths `[0.2, 0.9]`), confirming loss of early/non-local needle tokens.
-- Trails baseline LongMemEval pass count (**16/99** vs. 25/99 baseline) with **11** quality regressions (mean KV retention ratio = **1.00**).
+- Severe LongMemEval collapse (**16/99** vs. 25/99 baseline; **11** quality regressions, mean KV retention ratio = **1.00**).

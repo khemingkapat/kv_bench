@@ -108,7 +108,7 @@ Tested with k_proxy_ratio=0.3, alpha_threshold=4.0, and max_budget_ratio=0.35. M
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), InfiniGen scores **24/99** with **4** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), InfiniGen records **24/99** (**4** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,3 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), InfiniGen scor
 - Decode latency at 32K is **7.53x slower** than baseline (**219.7 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**1829885205 B/tok**, Host RSS Δ = **20491 MB**).
 - Elevated PG-19 logit divergence (mean KL = **11.64**, Top-1 = **15.2%**).
-- Trails baseline LongMemEval pass count (**24/99** vs. 25/99 baseline) with **4** quality regressions (mean KV retention ratio = **1.00**).

@@ -108,7 +108,7 @@ Tested with page_size=16, active_pages_budget=16, and exempt_early_layers=2. Whi
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), ArkVale scores **23/99** with **4** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **0.20**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), ArkVale records **23/99** (**4** regressions vs. 25/99 baseline; mean retention ratio = **0.20**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,3 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), ArkVale scores
 - Decode latency at 32K is **3.53x slower** than baseline (**102.9 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**1618383854 B/tok**, Host RSS Δ = **16614 MB**).
 - Elevated PG-19 logit divergence (mean KL = **11.42**, Top-1 = **17.6%**).
-- Trails baseline LongMemEval pass count (**23/99** vs. 25/99 baseline) with **4** quality regressions (mean KV retention ratio = **0.20**).

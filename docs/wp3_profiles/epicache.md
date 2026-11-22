@@ -108,7 +108,7 @@ Tested with num_episodes=4, episode_budget_tokens=1,024, and layer_sensitivity_a
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 0%, 4096: 0%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), EpiCache scores **10/99** with **17** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **0.52**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), EpiCache records **10/99** (**17** regressions vs. 25/99 baseline; mean retention ratio = **0.52**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,4 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), EpiCache score
 - High host-device transfer volume at 32K (**442264 B/tok**, Host RSS Δ = **2846 MB**).
 - Elevated PG-19 logit divergence (mean KL = **9.86**, Top-1 = **22.5%**).
 - NIAH retrieval drops to **0%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`), confirming loss of early/non-local needle tokens.
-- Trails baseline LongMemEval pass count (**10/99** vs. 25/99 baseline) with **17** quality regressions (mean KV retention ratio = **0.52**).
+- Severe LongMemEval collapse (**10/99** vs. 25/99 baseline; **17** quality regressions, mean KV retention ratio = **0.52**).

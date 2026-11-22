@@ -108,7 +108,7 @@ Tested with 1,024 heavy-hitter tokens + 1,024 recent window tokens (2,048 total 
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 20%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), H2O (Heavy-Hitter Oracle) scores **22/99** with **4** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **0.67**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), H2O (Heavy-Hitter Oracle) records **22/99** (**4** regressions vs. 25/99 baseline; mean retention ratio = **0.67**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,3 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), H2O (Heavy-Hit
 - High host-device transfer volume at 32K (**2005976 B/tok**, Host RSS Δ = **6874 MB**).
 - Elevated PG-19 logit divergence (mean KL = **6.55**, Top-1 = **52.5%**).
 - NIAH retrieval drops to **20%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]`), confirming loss of early/non-local needle tokens.
-- Trails baseline LongMemEval pass count (**22/99** vs. 25/99 baseline) with **4** quality regressions (mean KV retention ratio = **0.67**).

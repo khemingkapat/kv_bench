@@ -108,13 +108,12 @@ Tested at 4-bit Keys and 3-bit Values (qjl_v=True, qjl_k=False, ~3.66x theoretic
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), TurboQuant scores **27/99** with **5** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), TurboQuant records **27/99** (**5** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **22.2%** (10294 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
-- Matches or exceeds baseline LongMemEval pass count (**27/99** vs. 25/99 baseline) with **5** compression-induced quality regressions.
 
 ### Cons
 

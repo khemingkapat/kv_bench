@@ -108,7 +108,7 @@ Tested with gpu_cache_tokens=1,024, cpu_cache_tokens=32,768, group_size=64, and 
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), FlexGen-KV scores **24/99** with **6** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), FlexGen-KV records **24/99** (**6** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
@@ -120,4 +120,3 @@ On LongMemEval (99 inspected samples across 512–16,384 tokens), FlexGen-KV sco
 - Decode latency at 32K is **7.87x slower** than baseline (**229.6 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**1646964418 B/tok**, Host RSS Δ = **6565 MB**).
 - Elevated PG-19 logit divergence (mean KL = **10.80**, Top-1 = **21.7%**).
-- Trails baseline LongMemEval pass count (**24/99** vs. 25/99 baseline) with **6** quality regressions (mean KV retention ratio = **1.00**).

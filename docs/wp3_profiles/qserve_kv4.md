@@ -108,13 +108,12 @@ Tested with 4-bit Keys and Values, group_size=32, and smooth_attention_alpha=0.5
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval (99 inspected samples across 512–16,384 tokens), QServe KV4 scores **28/99** with **2** quality regressions relative to the uncompressed baseline (25/99) and a mean token retention ratio of **1.00**.
+On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), QServe KV4 records **28/99** (**2** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **18.6%** (10763 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
-- Matches or exceeds baseline LongMemEval pass count (**28/99** vs. 25/99 baseline) with **2** compression-induced quality regressions.
 
 ### Cons
 
