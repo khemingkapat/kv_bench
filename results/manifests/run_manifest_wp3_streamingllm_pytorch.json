@@ -48,18 +48,26 @@
   "golden_artifacts": {
     "streamingllm_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/streamingllm_hardware_pytorch_16gb.json",
-      "sha256": "c329edff7e8353c5ef9b309c8e8a47cbc8c266de335c8e963075a46df495e0cf",
-      "description": "Unified PyTorch context scaling sweep (512 to 32,768 tokens) with PyTorch profiling traces on 16GB cap"
+      "sha256": "05bd5adb4d5010a215e9c1f8c46fe66b998cb7937411ddfdcc5f0f786cd6d1eb",
+      "description": "Unified PyTorch context scaling sweep (512 to 32,768 tokens) with PyTorch profiling traces on 16GB cap",
+      "size_bytes": 9330
     },
     "streamingllm_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/streamingllm_longmem_pytorch_16gb.json",
-      "sha256": "d46c664a791f8ec83bef27bcecbe07e9239774cee3b434853dcaba95e4e18097",
-      "description": "Macro LongMemEval quality evaluation across contexts [512, 1024, 2048, 4096] under unified PyTorch runner"
+      "sha256": "fd5ddd1381cf06475c9b6cc8d206d6b1bcad2cda49cb18ca4870b14bb652c536",
+      "description": "Macro LongMemEval quality evaluation across contexts [512, 1024, 2048, 4096] under unified PyTorch runner",
+      "size_bytes": 36286
     },
     "verify_streamingllm_pytorch_16gb": {
       "path": "results/runs/wp3/verify_streamingllm_pytorch_16gb.json",
-      "sha256": "390e611a6e0ee407dfd6145c5b3fd65cfe3654e448bd2077cd4b0241be8d187c",
-      "description": "Verification run checking zero divergence against PyTorch baseline reference (100% Top-1 match)"
+      "sha256": "c36501447918cf95dfbbd0a7a731bda78278b90c1f174499d44022389a274375",
+      "description": "Verification run checking zero divergence against PyTorch baseline reference (100% Top-1 match)",
+      "size_bytes": 1299
+    },
+    "streamingllm_niah_pytorch_16gb": {
+      "path": "results/runs/wp3/streamingllm_niah_pytorch_16gb.json",
+      "sha256": "5f01cee56d9e25470e067b02003e87307f88c3d3b47b5e8bbefe3ac11be45b91",
+      "size_bytes": 7114
     }
   }
 }

@@ -47,18 +47,26 @@
   "golden_artifacts": {
     "h2o_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/h2o_hardware_pytorch_16gb.json",
-      "sha256": "3b734e9c63ff986b83fb700af4201886896c85b41bd0a6ff241974903621b076",
-      "description": "Unified PyTorch context scaling sweep (512 to 32,768 tokens) with PyTorch profiling traces on 16GB cap"
+      "sha256": "6de1820c969f977719779fdff6f9c7713a7ccbad7b932877527257dd5994444c",
+      "description": "Unified PyTorch context scaling sweep (512 to 32,768 tokens) with PyTorch profiling traces on 16GB cap",
+      "size_bytes": 9620
     },
     "h2o_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/h2o_longmem_pytorch_16gb.json",
-      "sha256": "86086d7990cc5a0b668074339173503187ea5be8aa0852fed49b37f776d825b9",
-      "description": "Macro LongMemEval quality evaluation across contexts [512, 1024, 2048, 4096] under unified PyTorch runner"
+      "sha256": "845af0f55840d4e930e0ad478c1595f8cefe4e1c41c22f74d405df32e7c4e1da",
+      "description": "Macro LongMemEval quality evaluation across contexts [512, 1024, 2048, 4096] under unified PyTorch runner",
+      "size_bytes": 36367
     },
     "verify_h2o_pytorch_16gb": {
       "path": "results/runs/wp3/verify_h2o_pytorch_16gb.json",
-      "sha256": "0547c50a940881e7e830557d0b18eb03b7f0df4fdb30540e2131b1e01d839a40",
-      "description": "Fast verification reference check (128 ctx, 16 tokens) capturing 100% Top-1 match against uncompressed reference"
+      "sha256": "f6188415cda3daa91f633ae12c43aa3fe3e57dded98ab9ef7bb5acd00fcd2671",
+      "description": "Fast verification reference check (128 ctx, 16 tokens) capturing 100% Top-1 match against uncompressed reference",
+      "size_bytes": 1325
+    },
+    "h2o_niah_pytorch_16gb": {
+      "path": "results/runs/wp3/h2o_niah_pytorch_16gb.json",
+      "sha256": "1c7c735501be64e264431a1692966206cc8d3402b216bd3f01787eb0633ffddf",
+      "size_bytes": 7142
     }
   }
 }

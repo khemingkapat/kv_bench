@@ -35,23 +35,23 @@
   "golden_artifacts": {
     "turboquant_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/turboquant_hardware_pytorch_16gb.json",
-      "sha256": "5638a8ce60049feb1e05be48321dfad10b108d4512910a4aa7713d0bbfed63a5",
-      "size_bytes": 10530
+      "sha256": "6dfdb5bbd319a1b41593464cd5300798a42af7885116d8ecdc0fa860dfd2a284",
+      "size_bytes": 10539
     },
     "turboquant_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/turboquant_longmem_pytorch_16gb.json",
-      "sha256": "b09397443336c6a55f2415d1348c733fbdcc8be1e251331effbb4c5587a1e406",
-      "size_bytes": 29393
+      "sha256": "df8c8f98d862a7f8693c91f2e6367380e5437972469735242589b7d1edfe3a6e",
+      "size_bytes": 36669
     },
     "turboquant_niah_pytorch_16gb": {
       "path": "results/runs/wp3/turboquant_niah_pytorch_16gb.json",
-      "sha256": "d115f8817df907156ae9b2cb755f04d3a2168d25381c26d0f941a54b002524a0",
-      "size_bytes": 7084
+      "sha256": "08562dd7526bea2f99df7036d4ea2c8a66f4d0b45811ae6a959d504517afec5f",
+      "size_bytes": 7340
     },
     "verify_turboquant_pytorch_16gb": {
       "path": "results/runs/wp3/verify_turboquant_pytorch_16gb.json",
-      "sha256": "238de8a76ad59f96cc008a5f199b985d3fd26698b289ff547e7d897fc747cb5d",
-      "size_bytes": 1470
+      "sha256": "abf3c6eba2ab178f3911dd35db1da69c92c292d78dff85858bb0bcb793380377",
+      "size_bytes": 1473
     }
   }
 }

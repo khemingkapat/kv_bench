@@ -39,23 +39,23 @@
   "golden_artifacts": {
     "shadowkv_hardware_pytorch_16gb": {
       "path": "results/runs/wp3/shadowkv_hardware_pytorch_16gb.json",
-      "sha256": "233c856bf2df8d090453aeaa34073509399af45e9f989e4f5e2cf7fc90a2ab55",
-      "size_bytes": 11453
+      "sha256": "6a7bbf2b1eaee9f97363f519395cb8b4572d9f000c7626333e02bf19ff492c24",
+      "size_bytes": 11814
     },
     "shadowkv_longmem_pytorch_16gb": {
       "path": "results/runs/wp3/shadowkv_longmem_pytorch_16gb.json",
-      "sha256": "a9394095a4ecd697870fb20f831473a3c596932c525122716be7676ac839d777",
-      "size_bytes": 20411
+      "sha256": "a9d68344f853fd91f441e4da9bb8a2718842b57703e173c12968bdcd84fefb32",
+      "size_bytes": 38138
     },
     "shadowkv_niah_pytorch_16gb": {
       "path": "results/runs/wp3/shadowkv_niah_pytorch_16gb.json",
-      "sha256": "6f7d45de9f8112d6af2b99b5ac3734d1359117238b9e0a649450f95f48bad073",
-      "size_bytes": 7789
+      "sha256": "fa78e110f6c641d8d667145e9495e8ebb53624561fba4c3ffcea395b0caa3110",
+      "size_bytes": 7770
     },
     "verify_shadowkv_pytorch_16gb": {
       "path": "results/runs/wp3/verify_shadowkv_pytorch_16gb.json",
-      "sha256": "7e74935c63c49d93e9ccd7d45f0cb5566e552e7707e4fad4895c5c9fdf64ea85",
-      "size_bytes": 1635
+      "sha256": "2fb21d75cad0de293ae6b976dd144fa02e1889a232678c7d0248952acdfc1627",
+      "size_bytes": 1628
     }
   }
 }
