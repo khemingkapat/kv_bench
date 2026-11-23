@@ -86,7 +86,7 @@ HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits
 | 8192 | 0.00 | 0.01 | 0/26 | 5 | 21 | 1.00 | 3.25 |
 | 16384 | 0.00 | 0.00 | 0/15 | 3 | 12 | 1.00 | 3.25 |
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+#### 5-Capability Accuracy Breakdown (Legacy WP-3 Substring Evaluation)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
@@ -108,7 +108,7 @@ Tested with key_bits=2, val_bits=4, pca_rank=4, and sidecode_bits=4. At 2-bit ke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 0%, 4096: 0%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), HeadQ records **0/99** (**25** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On legacy WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), HeadQ recorded **0/99** (**25** regressions vs. 25/99 legacy baseline; mean retention ratio = **1.00**). *Excluded from LongMemEval v2 due to catastrophic implementation collapse (0% NIAH).*
 
 ### Pros
 
@@ -119,4 +119,4 @@ On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), H
 - Decode latency at 32K is **2.77x slower** than baseline (**80.9 ms/tok** vs. 29.2 ms/tok).
 - Elevated PG-19 logit divergence (mean KL = **13.52**, Top-1 = **2.0%**).
 - NIAH retrieval drops to **0%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`), confirming loss of early/non-local needle tokens.
-- Severe LongMemEval collapse (**0/99** vs. 25/99 baseline; **25** quality regressions, mean KV retention ratio = **1.00**).
+- Severe WP-3 LongMemEval collapse (**0/99** vs. 25/99 legacy baseline; **25** quality regressions, excluded from LongMemEval v2).

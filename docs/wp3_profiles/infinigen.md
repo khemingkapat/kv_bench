@@ -2,7 +2,7 @@
 
 **Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, TEMPORAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `VERIFIED` (`85ad425a18e7…`) | `infinigen_longmem_pytorch_16gb.json`: `VERIFIED` (`c3d9ece137f4…`) | `infinigen_niah_pytorch_16gb.json`: `VERIFIED` (`3edd0b98a4cc…`)
+**Artifact Provenance (SHA-256):** `infinigen_hardware_pytorch_16gb.json`: `VERIFIED` (`85ad425a18e7…`) | `infinigen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`3ea88080a9be…`) | `infinigen_niah_pytorch_16gb.json`: `VERIFIED` (`3edd0b98a4cc…`)
 
 ---
 
@@ -48,12 +48,7 @@ InfiniGen speculatively prefetches important KV blocks from CPU memory one layer
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 6.4060 | 15.4249 | 54.37 |
-| 1024 | 6.1251 | 15.4249 | 54.37 |
-| 2048 | 6.7887 | 15.4249 | 51.56 |
-| 4096 | 7.4502 | 15.4249 | 46.70 |
-| 8192 | 7.1101 | 15.4249 | 48.44 |
-| 16384 | 4.9029 | 15.4249 | 63.33 |
+| 32768 | 7.3498 | 15.4249 | 49.32 |
 
 ![InfiniGen KL Fidelity](../figures/wp3/infinigen/kl_fidelity.png)
 
@@ -77,24 +72,21 @@ InfiniGen speculatively prefetches important KV blocks from CPU memory one layer
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.11 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.20 | 0.11 | 2/10 | 1 | 7 | 1.00 | 16.00 |
-| 2048 | 0.20 | 0.13 | 4/20 | 1 | 15 | 1.00 | 16.00 |
-| 4096 | 0.28 | 0.07 | 5/18 | 2 | 11 | 1.00 | 16.00 |
-| 8192 | 0.31 | 0.08 | 8/26 | 0 | 18 | 1.00 | 16.00 |
-| 16384 | 0.20 | 0.10 | 3/15 | 0 | 12 | 1.00 | 16.00 |
+**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **60.7%** | **91/150** | 13 | 46 | 5 | 144/150 | 1.00 | 16.00 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 36.4% | 50.0% | -13.6% |
-| `cross_session_reasoning` | 16 | 6.2% | 6.2% | +0.0% |
-| `information_update` | 20 | 50.0% | 45.0% | +5.0% |
-| `relative_timeframe` | 19 | 26.3% | 21.1% | +5.3% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 83.3% | 90.0% | -6.7% |
+| `cross_session_reasoning` | 30 | 40.0% | 43.3% | -3.3% |
+| `information_update` | 30 | 60.0% | 66.7% | -6.7% |
+| `relative_timeframe` | 30 | 30.0% | 30.0% | +0.0% |
+| `unanswerable_refusal` | 30 | 90.0% | 100.0% | -10.0% |
 
 ![InfiniGen LongMemEval Diagnostics](../figures/wp3/infinigen/longmem_diagnostics.png)
 
@@ -108,11 +100,12 @@ Tested with k_proxy_ratio=0.3, alpha_threshold=4.0, and max_budget_ratio=0.35. M
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), InfiniGen records **24/99** (**4** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), InfiniGen achieves **91/150 (60.7%)** vs. baseline **99/150 (66.0%)**, with **13** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
+- Preserves strong LongMemEval v2 semantic accuracy (**91/150 = 60.7%** vs. 99/150 = 66.0% baseline; **13** quality regressions).
 
 ### Cons
 

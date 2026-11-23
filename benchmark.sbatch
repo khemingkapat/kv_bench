@@ -55,7 +55,7 @@ SKIP_NIAH="${SKIP_NIAH:-0}"
 CONTEXTS="512 1024 2048 4096 8192 16384 32768"
 CONCURRENT_CONTEXTS="1024 2048 4096 8192"
 CONCURRENT_USERS="1 4 8 12 16"
-EVAL_CONTEXTS="512 1024 2048 4096 8192 16384"
+EVAL_CONTEXTS="32768"
 NIAH_CONTEXTS="2048 4096"
 FORCE_LONGMEM_REF="${FORCE_LONGMEM_REF:-1}"
 SKIP_EXISTING="${SKIP_EXISTING:-0}"
@@ -134,6 +134,18 @@ check_longmem_dataset() {
         echo "Run './.agents/scripts/slurm_ctl.sh sync' from the local worktree to stage datasets." >&2
         exit 1
     fi
+    uv run --no-sync python - <<'PY'
+import sys
+from scripts.download_datasets import EXPECTED_LONGMEMEVAL_SHA256, compute_sha256
+actual = compute_sha256("data/longmemeval/longmemeval_benchmark.json")
+if actual != EXPECTED_LONGMEMEVAL_SHA256:
+    print(
+        f"ERROR: Stale or corrupted LongMemEval dataset (got {actual}, expected {EXPECTED_LONGMEMEVAL_SHA256}). "
+        "Re-run './.agents/scripts/slurm_ctl.sh sync' from local workspace.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
 }
 # ==============================================================================
 # PyTorch Scientific Control Pipeline (WP1-4-1 Diagnostic Testbed)
@@ -171,18 +183,38 @@ if [[ "$ENGINE" == "pytorch" ]]; then
                 --output results/baseline_pytorch_16gb.json
         fi
 
+        NEED_LONGMEM_REF=0
         if [[ "$TECHNIQUE" == "baseline" || ! -f "$BASELINE_LONGMEM_REF" || "$FORCE_LONGMEM_REF" == "1" ]]; then
+            NEED_LONGMEM_REF=1
+        else
+            if ! uv run --no-sync python - "$BASELINE_LONGMEM_REF" "$EVAL_CONTEXTS" <<'PY'
+import json, sys
+ref_path, ctx_str = sys.argv[1], sys.argv[2]
+with open(ref_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+ctxs = data.get("contexts", {})
+for c in ctx_str.split():
+    entry = ctxs.get(c)
+    if not isinstance(entry, dict) or not entry.get("samples"):
+        print(f"[INFO] Reference '{ref_path}' missing per-sample data for ctx={c}; regenerating baseline reference.")
+        sys.exit(1)
+PY
+            then
+                NEED_LONGMEM_REF=1
+            fi
+        fi
+
+        if [[ "$NEED_LONGMEM_REF" == "1" ]]; then
             check_longmem_dataset
-            echo ">> [PyTorch Baseline] Step 3: LongMemEval Adherence & Reference Capture (512 - 16384, Select by Length)..."
+            echo ">> [PyTorch Baseline] Step 3: LongMemEval Adherence & Reference Capture (Single-Pass Native Length @ 32K)..."
             uv run --no-sync main.py \
                 --technique baseline \
                 --engine pytorch \
                 --model "$MODEL" \
                 --workload longmem \
-                --select-by-length \
                 --contexts $EVAL_CONTEXTS \
-                --max-tokens 32 \
-                --samples-per-task 10 \
+                --max-tokens 128 \
+                --samples-per-task 30 \
                 --seed 42 \
                 --max-vram-gb 16.0 \
                 --save-reference "$BASELINE_LONGMEM_REF" \
@@ -254,16 +286,15 @@ if [[ "$ENGINE" == "pytorch" ]]; then
                     echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2 skipped (exists: $LM_OUT)"
                 else
                     check_longmem_dataset
-                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2: Diagnostic LongMemEval Adherence & Causal Layer Retention (512 - 16384, Select by Length)..."
+                    echo ">> [PyTorch Technique: $CURRENT_TECH] Step 2: Diagnostic LongMemEval Adherence & Causal Layer Retention (Single-Pass Native Length @ 32K)..."
                     uv run --no-sync main.py \
                         --technique "$CURRENT_TECH" \
                         --engine pytorch \
                         --model "$MODEL" \
                         --workload longmem \
-                        --select-by-length \
                         --contexts $EVAL_CONTEXTS \
-                        --max-tokens 32 \
-                        --samples-per-task 10 \
+                        --max-tokens 128 \
+                        --samples-per-task 30 \
                         --seed 42 \
                         --max-vram-gb 16.0 \
                         --eval-reference "$BASELINE_LONGMEM_REF" \
@@ -329,7 +360,7 @@ if [[ "$TECHNIQUE" == "baseline" ]]; then
         --workload longmem \
         --dataset-path src/data/longmemeval_subset.json \
         --contexts 512 \
-        --max-tokens 32 \
+        --max-tokens 128 \
         --samples-per-task 1 \
         --seed 42 \
         --max-vram-gb 16.0 \
@@ -375,14 +406,14 @@ if [[ "$TECHNIQUE" == "baseline" ]]; then
         fi
 
         check_longmem_dataset
-        echo ">> 3. Running Baseline Long-Term Memory Adherence & Reference Capture (LongMemEval across contexts)..."
+        echo ">> 3. Running Baseline Long-Term Memory Adherence & Reference Capture (Single-Pass Native Length @ 32K)..."
         uv run --no-sync main.py \
             --technique baseline \
             --model "$MODEL" \
             --workload longmem \
             --contexts $EVAL_CONTEXTS \
-            --max-tokens 32 \
-            --samples-per-task 10 \
+            --max-tokens 128 \
+            --samples-per-task 30 \
             --seed 42 \
             --max-vram-gb 16.0 \
             --save-reference "results/references/baseline_${MODEL}_ref.json" \
@@ -439,8 +470,8 @@ else
             --model "$MODEL" \
             --workload longmem \
             --contexts $EVAL_CONTEXTS \
-            --max-tokens 32 \
-            --samples-per-task 10 \
+            --max-tokens 128 \
+            --samples-per-task 30 \
             --seed 42 \
             --max-vram-gb 16.0 \
             --eval-reference "$LONGMEM_REF" \

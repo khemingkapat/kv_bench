@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL, SPATIAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `arkvale_hardware_pytorch_16gb.json`: `VERIFIED` (`ba4c2ed121e1…`) | `arkvale_longmem_pytorch_16gb.json`: `VERIFIED` (`afd450e7b272…`) | `arkvale_niah_pytorch_16gb.json`: `VERIFIED` (`cc37c564cb5b…`)
+**Artifact Provenance (SHA-256):** `arkvale_hardware_pytorch_16gb.json`: `VERIFIED` (`ba4c2ed121e1…`) | `arkvale_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`5bbd4fc9fce2…`) | `arkvale_niah_pytorch_16gb.json`: `VERIFIED` (`cc37c564cb5b…`)
 
 ---
 
@@ -48,12 +48,7 @@ ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and ma
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 2.1817 | 15.4249 | 82.81 |
-| 1024 | 4.4387 | 15.4249 | 67.50 |
-| 2048 | 6.8198 | 15.4249 | 50.47 |
-| 4096 | 10.6687 | 15.4249 | 25.00 |
-| 8192 | 8.1206 | 15.4249 | 42.19 |
-| 16384 | 7.5475 | 16.0163 | 45.00 |
+| 32768 | 8.9879 | 15.4249 | 38.36 |
 
 ![ArkVale KL Fidelity](../figures/wp3/arkvale/kl_fidelity.png)
 
@@ -77,24 +72,21 @@ ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and ma
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.11 | 2/10 | 0 | 8 | 0.48 | 7.65 |
-| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 0.27 | 4.39 |
-| 2048 | 0.20 | 0.13 | 4/20 | 1 | 15 | 0.17 | 2.75 |
-| 4096 | 0.33 | 0.07 | 6/18 | 2 | 10 | 0.11 | 1.82 |
-| 8192 | 0.23 | 0.07 | 6/26 | 0 | 20 | 0.08 | 1.36 |
-| 16384 | 0.13 | 0.11 | 2/15 | 1 | 12 | 0.07 | 1.12 |
+**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **59.3%** | **89/150** | 14 | 47 | 4 | 146/150 | 0.11 | 1.76 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 40.9% | 50.0% | -9.1% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 55.0% | 45.0% | +10.0% |
-| `relative_timeframe` | 19 | 15.8% | 21.1% | -5.3% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 86.7% | 90.0% | -3.3% |
+| `cross_session_reasoning` | 30 | 26.7% | 43.3% | -16.7% |
+| `information_update` | 30 | 60.0% | 66.7% | -6.7% |
+| `relative_timeframe` | 30 | 30.0% | 30.0% | +0.0% |
+| `unanswerable_refusal` | 30 | 93.3% | 100.0% | -6.7% |
 
 ![ArkVale LongMemEval Diagnostics](../figures/wp3/arkvale/longmem_diagnostics.png)
 
@@ -108,12 +100,13 @@ Tested with page_size=16, active_pages_budget=16, and exempt_early_layers=2. Whi
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), ArkVale records **23/99** (**4** regressions vs. 25/99 baseline; mean retention ratio = **0.20**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ArkVale achieves **89/150 (59.3%)** vs. baseline **99/150 (66.0%)**, with **14** quality regressions and mean KV retention ratio **0.11**.
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **31.7%** (9033 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
+- Preserves strong LongMemEval v2 semantic accuracy (**89/150 = 59.3%** vs. 99/150 = 66.0% baseline; **14** quality regressions).
 
 ### Cons
 

@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL, SPATIAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `cachegen_hardware_pytorch_16gb.json`: `VERIFIED` (`acc433feceac…`) | `cachegen_longmem_pytorch_16gb.json`: `VERIFIED` (`409fbe1a671a…`) | `cachegen_niah_pytorch_16gb.json`: `VERIFIED` (`67b12f9ee081…`)
+**Artifact Provenance (SHA-256):** `cachegen_hardware_pytorch_16gb.json`: `VERIFIED` (`acc433feceac…`) | `cachegen_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`8d028741e9bd…`) | `cachegen_niah_pytorch_16gb.json`: `VERIFIED` (`67b12f9ee081…`)
 
 ---
 
@@ -48,12 +48,7 @@ CacheGen encodes KV tensors using anchor-delta compression (storing periodic anc
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 12.1891 | 15.4249 | 12.81 |
-| 1024 | 13.2311 | 15.4249 | 6.88 |
-| 2048 | 13.1094 | 15.4249 | 7.66 |
-| 4096 | 12.5166 | 15.4249 | 11.98 |
-| 8192 | 12.1365 | 15.4249 | 15.38 |
-| 16384 | 12.3040 | 15.4249 | 12.92 |
+| 32768 | 12.7129 | 15.4249 | 11.74 |
 
 ![CacheGen KL Fidelity](../figures/wp3/cachegen/kl_fidelity.png)
 
@@ -77,24 +72,21 @@ CacheGen encodes KV tensors using anchor-delta compression (storing periodic anc
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.06 | 2/10 | 1 | 7 | 1.00 | 6.39 |
-| 1024 | 0.10 | 0.04 | 1/10 | 2 | 7 | 1.00 | 6.39 |
-| 2048 | 0.00 | 0.06 | 0/20 | 5 | 15 | 1.00 | 6.39 |
-| 4096 | 0.33 | 0.09 | 6/18 | 1 | 11 | 1.00 | 6.39 |
-| 8192 | 0.23 | 0.08 | 6/26 | 0 | 20 | 1.00 | 6.39 |
-| 16384 | 0.07 | 0.07 | 1/15 | 2 | 12 | 1.00 | 6.39 |
+**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **44.0%** | **66/150** | 36 | 48 | 3 | 45/150 | 1.00 | 6.39 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 9.1% | 50.0% | -40.9% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 45.0% | 45.0% | +0.0% |
-| `relative_timeframe` | 19 | 21.1% | 21.1% | +0.0% |
-| `unanswerable_refusal` | 22 | 4.5% | 0.0% | +4.5% |
+| `fact_recall` | 30 | 46.7% | 90.0% | -43.3% |
+| `cross_session_reasoning` | 30 | 20.0% | 43.3% | -23.3% |
+| `information_update` | 30 | 50.0% | 66.7% | -16.7% |
+| `relative_timeframe` | 30 | 16.7% | 30.0% | -13.3% |
+| `unanswerable_refusal` | 30 | 86.7% | 100.0% | -13.3% |
 
 ![CacheGen LongMemEval Diagnostics](../figures/wp3/cachegen/longmem_diagnostics.png)
 
@@ -108,7 +100,7 @@ Tested with anchor_group_size=10, shallow_bits=8, mid_bits=4, and deep_bits=2. A
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 40%, 4096: 80%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), CacheGen records **16/99** (**11** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), CacheGen achieves **66/150 (44.0%)** vs. baseline **99/150 (66.0%)**, with **36** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
@@ -120,4 +112,4 @@ On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), C
 - High host-device transfer volume at 32K (**935016151 B/tok**, Host RSS Δ = **4536 MB**).
 - Elevated PG-19 logit divergence (mean KL = **12.87**, Top-1 = **6.2%**).
 - NIAH retrieval drops to **80%** at 4,096 tokens (failing at depths `[0.2, 0.9]`), confirming loss of early/non-local needle tokens.
-- Severe LongMemEval collapse (**16/99** vs. 25/99 baseline; **11** quality regressions, mean KV retention ratio = **1.00**).
+- Degrades LongMemEval v2 semantic accuracy to **66/150 (44.0%)** vs. 99/150 (66.0%) baseline (**36** quality regressions).

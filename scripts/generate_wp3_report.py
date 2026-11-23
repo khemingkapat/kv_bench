@@ -20,6 +20,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "results"
+GRADES_DIR = RESULTS_DIR / "grades"
 MANIFESTS_DIR = RESULTS_DIR / "manifests"
 PROFILES_DIR = ROOT / "docs" / "wp3_profiles"
 FIGURES_DIR = ROOT / "docs" / "figures" / "wp3"
@@ -433,6 +434,72 @@ def plot_niah_heatmap(tech: dict, ni_res: list[dict], out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_longmem_v2_diagnostics(tech: dict, judged: dict, base_judged: dict, out_path: Path) -> None:
+    """Plot LongMemEval v2 semantic accuracy vs. exact prompt_tokens bins + per-capability causal verdicts."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.3), dpi=150)
+
+    bins = [
+        ("0–2K", 0, 2000),
+        ("2–4K", 2000, 4000),
+        ("4–8K", 4000, 8000),
+        ("8–12K", 8000, 12000),
+        ("12K+", 12000, 10**9),
+    ]
+    t_samples = judged.get("samples", [])
+    b_samples = base_judged.get("samples", [])
+
+    labels, t_accs, b_accs = [], [], []
+    for lbl, lo, hi in bins:
+        t_sub = [s for s in t_samples if lo <= s.get("prompt_tokens", 0) < hi]
+        b_sub = [s for s in b_samples if lo <= s.get("prompt_tokens", 0) < hi]
+        if not t_sub:
+            continue
+        labels.append(f"{lbl}\n(n={len(t_sub)})")
+        t_accs.append(sum(1 for s in t_sub if s["correct"]) / len(t_sub) * 100.0)
+        b_accs.append(sum(1 for s in b_sub if s["correct"]) / len(b_sub) * 100.0 if b_sub else 0.0)
+
+    x = np.arange(len(labels))
+    w = 0.36
+    ax1.bar(x - w / 2, b_accs, w, label="Baseline (FP16)", color="#7f7f7f", alpha=0.85)
+    ax1.bar(x + w / 2, t_accs, w, label=tech["name"], color="#1f77b4")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels, fontsize=8.5)
+    ax1.set_ylim(0, 108)
+    ax1.set_title(f"{tech['name']} — Semantic Accuracy vs. Prompt Length (150q)")
+    ax1.set_xlabel("Exact Prompt Token Length")
+    ax1.set_ylabel("Semantic Accuracy (%)")
+    ax1.grid(True, axis="y", alpha=0.3)
+    ax1.legend(fontsize=8)
+
+    cap_short = ["Fact", "Cross", "Update", "Time", "Unans"]
+    pfm, qr, bl, ug = [], [], [], []
+    for cap in CAPABILITIES:
+        c_sub = [s for s in t_samples if s.get("task_type") == cap]
+        pfm.append(sum(1 for s in c_sub if s.get("causal_verdict") == "PASS_FIDELITY_MAINTAINED"))
+        qr.append(sum(1 for s in c_sub if s.get("causal_verdict") == "QUALITY_REGRESSION"))
+        bl.append(sum(1 for s in c_sub if s.get("causal_verdict") == "BASELINE_LIMITATION"))
+        ug.append(sum(1 for s in c_sub if s.get("causal_verdict") == "UNEXPECTED_GAIN"))
+
+    xc = np.arange(len(cap_short))
+    pfm_a, qr_a, bl_a, ug_a = np.array(pfm), np.array(qr), np.array(bl), np.array(ug)
+    ax2.bar(xc, pfm_a, label="Pass (Maintained)", color="#5cb85c")
+    ax2.bar(xc, ug_a, bottom=pfm_a, label="Unexpected Gain", color="#17becf")
+    ax2.bar(xc, qr_a, bottom=pfm_a + ug_a, label="Quality Regression", color="#d9534f")
+    ax2.bar(xc, bl_a, bottom=pfm_a + ug_a + qr_a, label="Baseline Limitation", color="#f0ad4e")
+    ax2.set_xticks(xc)
+    ax2.set_xticklabels(cap_short, fontsize=8.5)
+    ax2.set_ylim(0, 34)
+    ax2.set_title(f"{tech['name']} — Semantic Causal Attribution (30q / Task)")
+    ax2.set_xlabel("LongMemEval Capability")
+    ax2.set_ylabel("Question Count")
+    ax2.grid(True, axis="y", alpha=0.3)
+    ax2.legend(fontsize=7.5, loc="upper right")
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
 def plot_longmem_diagnostics(tech: dict, lm_res: list[dict], base_lm: list[dict], out_path: Path) -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2), dpi=150)
     ctxs = [r["requested_ctx"] for r in lm_res]
@@ -483,6 +550,8 @@ def build_diagnostic_narrative(
     ni_res: list[dict] | None,
     lm_res: list[dict] | None,
     base_lm: list[dict],
+    judged: dict | None = None,
+    base_judged: dict | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Generate metric-backed diagnostic explanation + pros & cons strictly from observed numbers."""
     pros: list[str] = []
@@ -557,27 +626,55 @@ def build_diagnostic_narrative(
         ni_str = ", ".join(f"{r['requested_ctx']}: {r['extra']['niah_accuracy']*100:.0f}%" for r in ni_res)
         reasons.append(f"On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **{ni_str}**.")
 
-    if lm_res:
+    if judged and base_judged:
+        passes = judged["correct_samples"]
+        tot = judged["total_samples"]
+        acc_pct = judged["overall_accuracy"] * 100.0
+        b_pass_v2 = base_judged["correct_samples"]
+        b_pct_v2 = base_judged["overall_accuracy"] * 100.0
+        vc = judged.get("causal_verdict_counts", {})
+        regs = vc.get("QUALITY_REGRESSION", 0)
+        ret = float(np.mean([r["extra"].get("diag_mean_overall_retention_ratio", 0.0) for r in lm_res])) if lm_res else 0.0
+        if passes >= b_pass_v2 - 10:
+            pros.append(
+                f"Preserves strong LongMemEval v2 semantic accuracy (**{passes}/{tot} = {acc_pct:.1f}%** vs. "
+                f"{b_pass_v2}/{tot} = {b_pct_v2:.1f}% baseline; **{regs}** quality regressions)."
+            )
+        else:
+            cons.append(
+                f"Degrades LongMemEval v2 semantic accuracy to **{passes}/{tot} ({acc_pct:.1f}%)** vs. "
+                f"{b_pass_v2}/{tot} ({b_pct_v2:.1f}%) baseline (**{regs}** quality regressions)."
+            )
+        reasons.append(
+            f"On LongMemEval v2 ({tot} quantile-sampled official questions at native length up to 32K, chat-templated, "
+            f"`max_tokens=128`, semantically graded), {tech['name']} achieves **{passes}/{tot} ({acc_pct:.1f}%)** vs. "
+            f"baseline **{b_pass_v2}/{tot} ({b_pct_v2:.1f}%)**, with **{regs}** quality regressions and mean KV retention ratio **{ret:.2f}**."
+        )
+    elif lm_res:
         passes = sum(r["extra"].get("diag_pass_count", 0) for r in lm_res)
         tot = sum(r["extra"].get("diag_total_inspected", 0) for r in lm_res)
         regs = sum(r["extra"].get("diag_quality_regression_count", 0) for r in lm_res)
         ret = float(np.mean([r["extra"].get("diag_mean_overall_retention_ratio", 0.0) for r in lm_res]))
         if passes < b_lm_pass * 0.7:
             cons.append(
-                f"Severe LongMemEval collapse (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} baseline; "
-                f"**{regs}** quality regressions, mean KV retention ratio = **{ret:.2f}**)."
+                f"Severe WP-3 LongMemEval collapse (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} legacy baseline; "
+                f"**{regs}** quality regressions, excluded from LongMemEval v2)."
             )
         reasons.append(
-            f"On WP-3 LongMemEval ({tot} raw substring evaluations across 512–16,384 tokens), {tech['name']} records **{passes}/{tot}** "
-            f"(**{regs}** regressions vs. {b_lm_pass}/{b_lm_tot} baseline; mean retention ratio = **{ret:.2f}**). "
-            "*Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, "
-            "32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*"
+            f"On legacy WP-3 LongMemEval ({tot} raw substring evaluations across 512–16,384 tokens), {tech['name']} recorded **{passes}/{tot}** "
+            f"(**{regs}** regressions vs. {b_lm_pass}/{b_lm_tot} legacy baseline; mean retention ratio = **{ret:.2f}**). "
+            "*Excluded from LongMemEval v2 due to catastrophic implementation collapse (0% NIAH).*"
         )
 
     return "\n\n".join(reasons), pros, cons
 
 
-def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]) -> dict[str, Any]:
+def write_technique_profile(
+    tech: dict,
+    base_hw: list[dict],
+    base_lm: list[dict],
+    base_judged: dict | None = None,
+) -> dict[str, Any]:
     tid = tech["id"]
     fig_dir = FIGURES_DIR / tid
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -590,6 +687,7 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
     hw_json = load_json(paths["hardware"])
     lm_json = load_json(paths["longmem"])
     ni_json = load_json(paths["niah"])
+    judged = load_json(GRADES_DIR / f"{tid}_judged.json")
     manifest = (
         load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}_pytorch.json")
         or load_json(MANIFESTS_DIR / f"run_manifest_wp3_{tid}.json")
@@ -608,7 +706,9 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
         plot_kl_fidelity(tech, pg_kl, lm_kl, fig_dir / "kl_fidelity.png")
     if ni_res:
         plot_niah_heatmap(tech, ni_res, fig_dir / "niah_heatmap.png")
-    if lm_res:
+    if judged and base_judged:
+        plot_longmem_v2_diagnostics(tech, judged, base_judged, fig_dir / "longmem_diagnostics.png")
+    elif lm_res:
         plot_longmem_diagnostics(tech, lm_res, base_lm, fig_dir / "longmem_diagnostics.png")
 
     cfg = (manifest or {}).get("technique_config", {})
@@ -690,7 +790,36 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
         lines.extend([acc_row, "", f"![{tech['name']} NIAH Heatmap](../figures/wp3/{tid}/niah_heatmap.png)", ""])
 
     lines.extend(["### 2.4 LongMemEval & Post-Hoc Diagnostics", ""])
-    if lm_res:
+    if judged and base_judged:
+        vc = judged.get("causal_verdict_counts", {})
+        samples_j = judged.get("samples", [])
+        eos_stops = sum(1 for s in samples_j if s.get("finish_reason") == "stop")
+        ex32 = next((r["extra"] for r in (lm_res or []) if r["requested_ctx"] == 32768), {})
+        lines.extend([
+            "**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**",
+            "",
+            "| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |",
+            "|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|",
+            f"| {judged['requested_ctx']} | **{judged['overall_accuracy']*100:.1f}%** | **{judged['correct_samples']}/{judged['total_samples']}** | "
+            f"{vc.get('QUALITY_REGRESSION', 0)} | {vc.get('BASELINE_LIMITATION', 0)} | {vc.get('UNEXPECTED_GAIN', 0)} | "
+            f"{eos_stops}/{judged['total_samples']} | {ex32.get('diag_mean_overall_retention_ratio', 0):.2f} | "
+            f"{ex32.get('diag_mean_overall_effective_bitwidth', 0):.2f} |",
+            "",
+            "#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)",
+            "",
+            "| Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |",
+            "|---|---:|---:|---:|---:|",
+        ])
+        t_pta = judged.get("per_task_accuracy", {})
+        b_pta = base_judged.get("per_task_accuracy", {})
+        t_cnt = judged.get("per_task_counts", {})
+        for cap in CAPABILITIES:
+            acc = t_pta.get(cap, 0.0) * 100.0
+            b_acc = b_pta.get(cap, 0.0) * 100.0
+            cnt = t_cnt.get(cap, 0)
+            lines.append(f"| `{cap}` | {cnt} | {acc:.1f}% | {b_acc:.1f}% | {acc - b_acc:+.1f}% |")
+        lines.extend(["", f"![{tech['name']} LongMemEval Diagnostics](../figures/wp3/{tid}/longmem_diagnostics.png)", ""])
+    elif lm_res:
         lines.append("| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |")
         lines.append("|---:|---:|---:|:---:|---:|---:|---:|---:|")
         for r in lm_res:
@@ -706,7 +835,7 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
         base_caps = aggregate_capabilities(base_lm)
         lines.extend([
             "",
-            "#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)",
+            "#### 5-Capability Accuracy Breakdown (Legacy WP-3 Substring Evaluation)",
             "",
             "| Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |",
             "|---|---:|---:|---:|---:|",
@@ -723,7 +852,9 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
 
         lines.extend(["", f"![{tech['name']} LongMemEval Diagnostics](../figures/wp3/{tid}/longmem_diagnostics.png)", ""])
 
-    why_text, pros, cons = build_diagnostic_narrative(tech, hw_res, base_hw, pg_kl, lm_kl, ni_res, lm_res, base_lm)
+    why_text, pros, cons = build_diagnostic_narrative(
+        tech, hw_res, base_hw, pg_kl, lm_kl, ni_res, lm_res, base_lm, judged=judged, base_judged=base_judged
+    )
     lines.extend([
         "---",
         "",
@@ -746,6 +877,19 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
     (PROFILES_DIR / f"{tid}.md").write_text("\n".join(lines), encoding="utf-8")
 
     r32 = next((r for r in hw_res if r["requested_ctx"] == 32768), hw_res[-1]) if hw_res else None
+    if judged:
+        lm_pass = judged["correct_samples"]
+        lm_tot = judged["total_samples"]
+        lm_acc_pct = judged["overall_accuracy"] * 100.0
+        lm_reg = judged.get("causal_verdict_counts", {}).get("QUALITY_REGRESSION", 0)
+        lm_v2 = True
+    else:
+        lm_pass = sum(r["extra"].get("diag_pass_count", 0) for r in lm_res) if lm_res else None
+        lm_tot = sum(r["extra"].get("diag_total_inspected", 0) for r in lm_res) if lm_res else None
+        lm_acc_pct = (lm_pass / lm_tot * 100.0) if (lm_pass is not None and lm_tot) else None
+        lm_reg = sum(r["extra"].get("diag_quality_regression_count", 0) for r in lm_res) if lm_res else None
+        lm_v2 = False
+
     return {
         "id": tid,
         "name": tech["name"],
@@ -759,45 +903,55 @@ def write_technique_profile(tech: dict, base_hw: list[dict], base_lm: list[dict]
         "lm_kl": float(np.nanmean(lm_kl[1])) if lm_kl[1] else None,
         "niah_2k": next((r["extra"]["niah_accuracy"] * 100 for r in ni_res if r["requested_ctx"] == 2048), None) if ni_res else None,
         "niah_4k": next((r["extra"]["niah_accuracy"] * 100 for r in ni_res if r["requested_ctx"] == 4096), None) if ni_res else None,
-        "lm_pass": sum(r["extra"].get("diag_pass_count", 0) for r in lm_res) if lm_res else None,
-        "lm_tot": sum(r["extra"].get("diag_total_inspected", 0) for r in lm_res) if lm_res else None,
-        "lm_reg": sum(r["extra"].get("diag_quality_regression_count", 0) for r in lm_res) if lm_res else None,
+        "lm_pass": lm_pass,
+        "lm_tot": lm_tot,
+        "lm_acc_pct": lm_acc_pct,
+        "lm_reg": lm_reg,
+        "lm_v2": lm_v2,
     }
 
 
-def plot_overview_figures(summaries: list[dict[str, Any]], base_hw: list[dict], base_lm: list[dict]) -> None:
+def plot_overview_figures(
+    summaries: list[dict[str, Any]],
+    base_hw: list[dict],
+    base_lm: list[dict],
+    base_judged: dict | None = None,
+) -> None:
     OVERVIEW_FIG_DIR.mkdir(parents=True, exist_ok=True)
     b32 = next((r for r in base_hw if r["requested_ctx"] == 32768), base_hw[-1])
-    b_pass = sum(r["extra"].get("diag_pass_count", 0) for r in base_lm)
+    use_v2 = base_judged is not None and any(s.get("lm_v2") for s in summaries)
+    b_val = base_judged["overall_accuracy"] * 100.0 if use_v2 else sum(r["extra"].get("diag_pass_count", 0) for r in base_lm)
     axis_colors = {"STRUCTURAL": "#1f77b4", "SPATIAL": "#2ca02c", "TEMPORAL": "#ff7f0e"}
 
     fig, ax = plt.subplots(figsize=(8.5, 5.0), dpi=150)
-    omitted = [s["name"] for s in summaries if s["vram_32k"] is None or s["lm_pass"] is None]
+    omitted = [s["name"] for s in summaries if s["vram_32k"] is None or (use_v2 and not s.get("lm_v2")) or s["lm_pass"] is None]
     for s in summaries:
-        if s["vram_32k"] is None or s["lm_pass"] is None:
+        if s["vram_32k"] is None or s["lm_pass"] is None or (use_v2 and not s.get("lm_v2")):
             continue
+        y_val = s["lm_acc_pct"] if use_v2 else s["lm_pass"]
         ax.scatter(
             s["vram_32k"],
-            s["lm_pass"],
+            y_val,
             color=axis_colors.get(s["primary_axis"], "#333333"),
             s=110,
             alpha=0.9,
             edgecolors="black",
             linewidth=0.7,
         )
-        ax.annotate(s["name"], (s["vram_32k"], s["lm_pass"]), xytext=(6, 4), textcoords="offset points", fontsize=8.5)
+        ax.annotate(s["name"], (s["vram_32k"], y_val), xytext=(6, 4), textcoords="offset points", fontsize=8.5)
 
-    ax.scatter(b32["peak_alloc_mb"], b_pass, color="#d62728", marker="*", s=200, label="PyTorch SDPA Baseline (FP16)", zorder=5)
+    ax.scatter(b32["peak_alloc_mb"], b_val, color="#d62728", marker="*", s=200, label="PyTorch SDPA Baseline (FP16)", zorder=5)
     ax.axvline(b32["peak_alloc_mb"], color="#d62728", linestyle="--", alpha=0.4)
-    ax.axhline(b_pass, color="#d62728", linestyle="--", alpha=0.4)
+    ax.axhline(b_val, color="#d62728", linestyle="--", alpha=0.4)
 
     for axis, col in axis_colors.items():
         ax.scatter([], [], color=col, label=f"Axis: {axis}", s=80)
     if omitted:
+        note_lbl = "Excluded (WP-3 collapse)" if use_v2 else "Pending 32K HW Sweep"
         ax.text(
             0.99,
             0.02,
-            f"Pending 32K HW Sweep: {', '.join(omitted)}",
+            f"{note_lbl}: {', '.join(omitted)}",
             transform=ax.transAxes,
             ha="right",
             va="bottom",
@@ -805,9 +959,14 @@ def plot_overview_figures(summaries: list[dict[str, Any]], base_hw: list[dict], 
             color="#666666",
             bbox={"boxstyle": "round,pad=0.3", "facecolor": "#f8f9fa", "edgecolor": "#cccccc"},
         )
-    ax.set_title("WP-3 Trade-Off: 32K Peak VRAM vs. Raw LongMemEval Passes (Collapse-Only)*")
-    ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
-    ax.set_ylabel("Raw Substring LongMemEval Passes (out of 99; collapse-only)*")
+    if use_v2:
+        ax.set_title("WP-3 Pareto Trade-Off: 32K Peak VRAM vs. LongMemEval v2 Semantic Accuracy")
+        ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
+        ax.set_ylabel("LongMemEval v2 Semantic Accuracy (%, 150q @ 32K) — Higher is Better")
+    else:
+        ax.set_title("WP-3 Trade-Off: 32K Peak VRAM vs. Raw LongMemEval Passes (Collapse-Only)*")
+        ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
+        ax.set_ylabel("Raw Substring LongMemEval Passes (out of 99; collapse-only)*")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8.5, loc="lower left")
     fig.tight_layout()
@@ -863,9 +1022,18 @@ def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[
             caveat_parts.append(f"NIAH drops to **{s['niah_2k']:.0f}% @2K / {s['niah_4k']:.0f}% @4K**")
 
     if s["lm_pass"] is not None and s["lm_tot"] is not None:
-        if s["lm_pass"] < b_pass * 0.7:
+        if s.get("lm_v2"):
+            if s["lm_pass"] >= b_pass - 10:
+                upside_parts.append(
+                    f"**{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%) LongMemEval v2** ({s['lm_reg']} regressions)"
+                )
+            else:
+                caveat_parts.append(
+                    f"LongMemEval v2 drops to **{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%)** ({s['lm_reg']} regressions)"
+                )
+        elif s["lm_pass"] < 18:
             caveat_parts.append(
-                f"LongMemEval collapse (**{s['lm_pass']}/{s['lm_tot']}** vs. {b_pass} baseline; {s['lm_reg']} regressions)"
+                f"WP-3 LongMemEval collapse (**{s['lm_pass']}/{s['lm_tot']}**, excluded from v2)"
             )
 
     if s["lm_kl"] is not None and s["lm_kl"] < 6.0:
@@ -878,10 +1046,33 @@ def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[
     return upside, caveat
 
 
-def write_executive_report(summaries: list[dict[str, Any]], base_hw: list[dict], base_lm: list[dict]) -> None:
+def write_executive_report(
+    summaries: list[dict[str, Any]],
+    base_hw: list[dict],
+    base_lm: list[dict],
+    base_judged: dict | None = None,
+) -> None:
     b32 = next((r for r in base_hw if r["requested_ctx"] == 32768), base_hw[-1])
-    b_pass = sum(r["extra"].get("diag_pass_count", 0) for r in base_lm)
-    b_tot = sum(r["extra"].get("diag_total_inspected", 0) for r in base_lm)
+    use_v2 = base_judged is not None and any(s.get("lm_v2") for s in summaries)
+    b_pass = base_judged["correct_samples"] if use_v2 else sum(r["extra"].get("diag_pass_count", 0) for r in base_lm)
+    b_tot = base_judged["total_samples"] if use_v2 else sum(r["extra"].get("diag_total_inspected", 0) for r in base_lm)
+    b_lm_cell = f"**{b_pass}/{b_tot} ({base_judged['overall_accuracy']*100:.1f}%)**" if use_v2 else f"**{b_pass}/{b_tot}**"
+
+    note_block = (
+        [
+            "> [!NOTE]",
+            "> **LongMemEval v2 Methodology:** All 9 working techniques + Baseline were re-evaluated under the overhauled "
+            "LongMemEval v2 harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability "
+            "including all 30 official `_abs` unanswerables, Qwen chat template, `max_tokens=128` + multi-EOS stopping, per-sample KL alignment, "
+            "and decoupled offline semantic grading). `HeadQ` (`0/99*`) and `EpiCache` (`10/99*`) suffered catastrophic collapse in WP-3 (`0%` NIAH) "
+            "and retain their legacy WP-3 collapse counts.",
+        ]
+        if use_v2
+        else [
+            "> [!NOTE]",
+            "> **LongMemEval Methodology Caveat (WP-3):** Raw `LongMem Pass` counts below (`X/99`) reflect the WP-3 substring-graded harness.",
+        ]
+    )
 
     lines: list[str] = [
         "# WP-3 Candidate Exploration & Synthesis Report",
@@ -893,27 +1084,26 @@ def write_executive_report(summaries: list[dict[str, Any]], base_hw: list[dict],
         "a 4× KV-cache reduction translates to ~18–35% total process VRAM savings at 32K context. "
         "Fine-grained tables, per-capability breakdowns, and `matplotlib` figures live in [`docs/wp3_profiles/`](wp3_profiles/).",
         "",
-        "> [!NOTE]",
-        "> **LongMemEval Methodology Caveat (WP-3):** Raw `LongMem Pass` counts below (`X/99`) reflect the WP-3 substring-graded, "
-        "raw-prompt (non-chat-templated), `max_tokens=32`, 6-tier overlapping harness. Post-hoc audit confirmed that small apparent leads "
-        "over Baseline (`25/99`) at 8K (`QServe KV4 28/99`, `TurboQuant 27/99`, `StreamingLLM 26/99`) stem from substring false positives/negatives, "
-        "refusal-boundary flips on 7 deciding questions, and front-truncation of long contexts. Accordingly, WP-3 LongMemEval counts are "
-        "interpreted **strictly for catastrophic-collapse detection** (`HeadQ 0/99`, `EpiCache 10/99`, `CacheGen 16/99`), while structural "
-        "fidelity ranking for WP-4 is anchored on **2D NIAH exact-match retrieval** and **PG-19 / LongMem KL divergence**. "
-        "A dedicated harness overhaul (single-pass native length at 32K, chat template, `max_tokens=128`, decoupled offline grading) is tracked as a follow-up.",
+        *note_block,
         "",
         "---",
         "",
         "## 1. Cross-Technique Summary Matrix",
         "",
-        "| WP | Technique | Primary Axis | 32K VRAM (MB) | 32K TPOT (ms) | 32K Host RSS Δ (MB) | 32K Memcpy (B/tok) | PG-19 KL | LongMem KL | NIAH (2K / 4K) | LongMem Pass | Regressions | Profile |",
+        "| WP | Technique | Primary Axis | 32K VRAM (MB) | 32K TPOT (ms) | 32K Host RSS Δ (MB) | 32K Memcpy (B/tok) | PG-19 KL | LongMem KL | NIAH (2K / 4K) | LongMem v2 Semantic | Regressions | Profile |",
         "|:---:|---|:---:|---:|---:|---:|---:|---:|---:|:---:|:---:|---:|---|",
-        f"| WP2 | **PyTorch SDPA Baseline** | — | **{b32['peak_alloc_mb']:.0f}** | **{b32['tpot_mean_ms']:.1f}** | **{b32['host_rss_delta_mb']:.0f}** | **{b32['memcpy_bytes_per_token']:.0f}** | — | — | — | **{b_pass}/{b_tot}** | **0** | [`baseline_pytorch_16gb.json`](../results/baseline_pytorch_16gb.json) |",
+        f"| WP2 | **PyTorch SDPA Baseline** | — | **{b32['peak_alloc_mb']:.0f}** | **{b32['tpot_mean_ms']:.1f}** | **{b32['host_rss_delta_mb']:.0f}** | **{b32['memcpy_bytes_per_token']:.0f}** | — | — | — | {b_lm_cell} | **0** | [`baseline_pytorch_16gb.json`](../results/baseline_pytorch_16gb.json) |",
     ]
 
     for s in summaries:
         niah_str = f"{s['niah_2k']:.0f}% / {s['niah_4k']:.0f}%" if s["niah_2k"] is not None else "—"
-        lm_str = f"{s['lm_pass']}/{s['lm_tot']}" if s["lm_pass"] is not None else "—"
+        if s["lm_pass"] is not None:
+            if s.get("lm_v2"):
+                lm_str = f"{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%)"
+            else:
+                lm_str = f"{s['lm_pass']}/{s['lm_tot']}* *(collapse)*"
+        else:
+            lm_str = "—"
         lines.append(
             f"| {s['wp']} | **{s['name']}** | `{s['primary_axis']}` | "
             f"{fmt_num(s['vram_32k'], '.0f', 'Pending')} | {fmt_num(s['tpot_32k'], '.1f', 'Pending')} | "
@@ -993,10 +1183,11 @@ def main() -> None:
 
     base_hw = base_hw_json["results"]
     base_lm = base_lm_json["results"]
+    base_judged = load_json(GRADES_DIR / "baseline_judged.json")
 
-    summaries = [write_technique_profile(t, base_hw, base_lm) for t in TECHNIQUES]
-    plot_overview_figures(summaries, base_hw, base_lm)
-    write_executive_report(summaries, base_hw, base_lm)
+    summaries = [write_technique_profile(t, base_hw, base_lm, base_judged=base_judged) for t in TECHNIQUES]
+    plot_overview_figures(summaries, base_hw, base_lm, base_judged=base_judged)
+    write_executive_report(summaries, base_hw, base_lm, base_judged=base_judged)
     print(f"Generated {len(summaries)} profiles in {PROFILES_DIR} and executive report at {REPORT_PATH}")
 
 

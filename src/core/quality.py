@@ -180,8 +180,13 @@ def load_quality_reference(path: str) -> dict[str, Any]:
 
     if "contexts" in data and isinstance(data["contexts"], dict):
         for ctx_entry in data["contexts"].values():
-            if isinstance(ctx_entry, dict) and "step_logprobs" in ctx_entry:
-                ctx_entry["step_logprobs"] = _normalize_steps(ctx_entry["step_logprobs"])
+            if isinstance(ctx_entry, dict):
+                if "step_logprobs" in ctx_entry:
+                    ctx_entry["step_logprobs"] = _normalize_steps(ctx_entry["step_logprobs"])
+                if isinstance(ctx_entry.get("samples"), dict):
+                    for s_entry in ctx_entry["samples"].values():
+                        if isinstance(s_entry, dict) and "step_logprobs" in s_entry:
+                            s_entry["step_logprobs"] = _normalize_steps(s_entry["step_logprobs"])
 
     if "step_logprobs" in data:
         data["step_logprobs"] = _normalize_steps(data["step_logprobs"])
@@ -194,14 +199,54 @@ def evaluate_fidelity_against_reference(
     target_ctx: int,
     target_token_ids: list[int],
     target_step_logprobs: list[dict[int, float]] | None = None,
+    target_samples: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Compare a target run against saved reference data for a matching context length."""
+    """Compare a target run against saved reference data for a matching context length.
+
+    When both reference and target provide per-sample outputs (`samples`), computes
+    Top-1 agreement and KL divergence per `sample_id` so variable-length EOS stopping
+    never shifts subsequent questions out of phase.
+    """
     ctx_key = str(target_ctx)
     contexts_map = reference_data.get("contexts", {})
     ref_entry = contexts_map.get(ctx_key) or reference_data.get(ctx_key)
 
     if not ref_entry:
+        print(f"[WARNING] Quality reference missing context_length={target_ctx}; skipping KL/Top-1 fidelity.")
         return {}
+
+    ref_samples = ref_entry.get("samples")
+    if isinstance(ref_samples, dict) and ref_samples and isinstance(target_samples, dict) and target_samples:
+        matched_ids = [sid for sid in ref_samples if sid in target_samples]
+        if matched_ids:
+            total_matches = 0
+            total_compared = 0
+            all_kl_vals: list[float] = []
+            for sid in matched_ids:
+                r_toks = ref_samples[sid].get("token_ids", [])
+                t_toks = target_samples[sid].get("token_ids", [])
+                cmp_len = min(len(r_toks), len(t_toks))
+                if cmp_len > 0:
+                    total_matches += sum(1 for i in range(cmp_len) if r_toks[i] == t_toks[i])
+                    total_compared += cmp_len
+
+                r_lps = ref_samples[sid].get("step_logprobs") or []
+                t_lps = target_samples[sid].get("step_logprobs") or []
+                lp_steps = min(len(r_lps), len(t_lps))
+                for i in range(lp_steps):
+                    p_dist = _normalize_logprobs(r_lps[i])
+                    q_dist = _normalize_logprobs(t_lps[i])
+                    all_kl_vals.append(compute_kl_divergence_from_probs(p_dist, q_dist))
+
+            res: dict[str, Any] = {
+                "top1_agreement": round(total_matches / total_compared, 4) if total_compared > 0 else 0.0,
+                "fidelity_alignment": "per_sample",
+                "fidelity_matched_samples": len(matched_ids),
+            }
+            if all_kl_vals:
+                res["kl_div_mean"] = round(sum(all_kl_vals) / len(all_kl_vals), 5)
+                res["kl_div_p99"] = calc_percentile(all_kl_vals, 99.0)
+            return res
 
     base_tokens = ref_entry.get("token_ids", [])
     base_lps = ref_entry.get("step_logprobs", None)

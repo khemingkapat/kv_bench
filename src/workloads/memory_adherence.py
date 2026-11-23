@@ -10,6 +10,7 @@ Evaluates Long-Term Memory Adherence across 5 core conversational capabilities:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -48,6 +49,57 @@ def classify_length_tier(words: int) -> tuple[int, str]:
         return approx_tokens, "long"
 
 
+def _compute_file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def format_longmem_prompt(context: str, question: str, tokenizer: Any = None) -> str:
+    """Format a LongMemEval conversation + question using the model's chat template when available.
+
+    Keeps the entire conversation history + question inside a single `user` message so
+    `[Session Break]` markers remain intact for `diagnostic.py`, while avoiding raw
+    non-chat prompting that triggers boilerplate refusals on Instruct models.
+    """
+    user_content = (
+        "Answer the question concisely based on the following conversation history. "
+        "If the information is not mentioned in the conversation, say that it was not mentioned.\n\n"
+        f"{context}\n\n"
+        f"Question: {question}"
+    )
+
+    chat_tpl = getattr(tokenizer, "chat_template", None) if tokenizer is not None else None
+    if isinstance(chat_tpl, str) and chat_tpl and hasattr(tokenizer, "apply_chat_template"):
+        messages = [{"role": "user", "content": user_content}]
+        try:
+            rendered = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            if isinstance(rendered, str) and rendered:
+                return rendered
+        except TypeError:
+            try:
+                rendered = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                if isinstance(rendered, str) and rendered:
+                    return rendered
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    return f"{user_content}\nAnswer:"
+
+
 class LongMemEvalWorkload(Workload):
     """Workload that executes multi-turn conversations from the LongMemEval subset
     and evaluates category-level and overall memory adherence accuracy.
@@ -70,6 +122,7 @@ class LongMemEvalWorkload(Workload):
                 BENCHMARK_DATASET_PATH if os.path.exists(BENCHMARK_DATASET_PATH) else FALLBACK_DATASET_PATH
             )
         self.dataset_path = dataset_path
+        self.dataset_sha256 = _compute_file_sha256(dataset_path) if os.path.exists(dataset_path) else ""
         self.samples_per_task = samples_per_task
         self.max_samples = max_samples
         self.seed = seed
@@ -179,29 +232,15 @@ class LongMemEvalWorkload(Workload):
         except ImportError:
             sampling_params = None
 
-        from src.core.workload import _get_tokenizer, load_continuous_prefix
+        from src.core.workload import _get_tokenizer
 
         active_samples = self.get_active_samples(context_length)
-        target_words = max(30, int(context_length * 0.6))
         tok = _get_tokenizer(llm)
 
-        prompts = []
-        for s in active_samples:
-            words = s.get("context", "").split()
-            if len(words) > target_words:
-                ctx_text = " ".join(words[-target_words:])
-                prefix = ""
-            else:
-                ctx_text = s.get("context", "")
-                remaining = target_words - len(words)
-                # Pad with natural PG-19 background passage instead of synthetic repeated sentence
-                needed_tokens = max(10, int(remaining * 1.45))
-                prefix = (
-                    load_continuous_prefix(needed_tokens, tokenizer=tok)
-                    + "\n\n[Chat History Continued]\n"
-                ) if remaining > 20 else ""
-
-            prompts.append(f"{prefix}{ctx_text}\nUser: {s['question']}\nAssistant:")
+        prompts = [
+            format_longmem_prompt(s.get("context", ""), s["question"], tokenizer=tok)
+            for s in active_samples
+        ]
 
         ref_correctness_by_id: dict[str, bool] = {}
         if self.eval_reference and os.path.exists(self.eval_reference):
@@ -214,19 +253,22 @@ class LongMemEvalWorkload(Workload):
                 ref_correctness_by_id = {}
 
         diagnostic_records = []
+        diag_by_sample_id: dict[str, dict[str, Any]] = {}
+
         def _post_hoc_diag_hook(cache: Any, req_idx: int, req_out: Any) -> dict[str, Any] | None:
             if req_idx < len(active_samples):
                 sample = active_samples[req_idx]
+                sid = sample.get("id", f"sample_{req_idx}")
                 pred_text = req_out.outputs[0].text.strip()
-                from src.core.quality import score_longmemeval_sample
+                from src.core.quality import is_ans_or_unans, score_longmemeval_sample
                 is_correct = score_longmemeval_sample(
                     pred_text,
                     sample.get("expected_answer", ""),
-                    is_unanswerable=sample.get("unanswerable", False),
+                    is_unanswerable=is_ans_or_unans(sample),
                     refusal_triggers=REFUSAL_TRIGGERS,
                 )
                 baseline_correct = ref_correctness_by_id.get(
-                    sample.get("id"), sample.get("baseline_correct", None)
+                    sid, sample.get("baseline_correct", None)
                 )
                 from src.core.diagnostic import inspect_sample_diagnostic
                 diag = inspect_sample_diagnostic(
@@ -239,13 +281,24 @@ class LongMemEvalWorkload(Workload):
                     tokenizer=tok,
                 )
                 diagnostic_records.append(diag)
-                return diag.to_dict()
+                diag_dict = diag.to_dict()
+                diag_by_sample_id[sid] = {
+                    "overall_retention_ratio": diag_dict.get("overall_retention_ratio"),
+                    "overall_effective_bitwidth": diag_dict.get("overall_effective_bitwidth"),
+                    "min_session_effective_bitwidth": diag_dict.get("min_session_effective_bitwidth"),
+                    "most_degraded_session_idx": diag_dict.get("most_degraded_session_idx"),
+                    "num_sessions": len(diag_dict.get("session_token_counts", [])),
+                }
+                return diag_dict
             return None
 
         generate_kwargs: dict[str, Any] = {}
         import inspect
-        if "post_hoc_hook" in inspect.signature(llm.generate).parameters:
+        gen_params = inspect.signature(llm.generate).parameters
+        if "post_hoc_hook" in gen_params:
             generate_kwargs["post_hoc_hook"] = _post_hoc_diag_hook
+        if "max_tokens" in gen_params:
+            generate_kwargs["max_tokens"] = max_tokens
 
         start_wall = time.perf_counter()
         outputs = llm.generate(prompts, sampling_params, **generate_kwargs)
@@ -259,18 +312,46 @@ class LongMemEvalWorkload(Workload):
         tpots: list[float] = []
         all_token_ids: list[int] = []
         all_step_logprobs: list[dict[int, float]] = []
+        sample_outputs: dict[str, dict[str, Any]] = {}
+        sample_records: list[dict[str, Any]] = []
 
         total_wall = end_wall - start_wall
 
-        for out in outputs:
-            gen_text = out.outputs[0].text.strip()
+        for idx, (sample, out) in enumerate(zip(active_samples, outputs)):
+            sid = sample.get("id", f"sample_{idx}")
+            comp = out.outputs[0]
+            gen_text = comp.text.strip()
             predictions.append(gen_text)
-            total_prompt_tok += len(out.prompt_token_ids)
-            gen_len = len(out.outputs[0].token_ids)
+            p_len = len(out.prompt_token_ids)
+            total_prompt_tok += p_len
+            gen_len = len(comp.token_ids)
             total_gen_tok += gen_len
 
-            all_token_ids.extend(out.outputs[0].token_ids)
-            all_step_logprobs.extend(extract_step_logprobs(out))
+            step_lps = extract_step_logprobs(out)
+            all_token_ids.extend(comp.token_ids)
+            all_step_logprobs.extend(step_lps)
+            sample_outputs[sid] = {
+                "token_ids": list(comp.token_ids),
+                "step_logprobs": step_lps,
+            }
+
+            raw_finish = getattr(comp, "finish_reason", None)
+            finish_reason = raw_finish if isinstance(raw_finish, str) else "unknown"
+
+            rec: dict[str, Any] = {
+                "id": sid,
+                "task_type": sample.get("task_type", "unknown"),
+                "unanswerable": bool(sample.get("unanswerable", False) or sample.get("task_type") == "unanswerable_refusal"),
+                "prompt_tokens": p_len,
+                "generated_tokens": gen_len,
+                "finish_reason": finish_reason,
+                "question": sample.get("question", ""),
+                "expected_answer": sample.get("expected_answer", ""),
+                "prediction": gen_text,
+            }
+            if sid in diag_by_sample_id:
+                rec["diagnostic"] = diag_by_sample_id[sid]
+            sample_records.append(rec)
 
             t, d, _ = extract_request_timings(out, total_wall, gen_len)
             ttfts.append(round(t, 4))
@@ -279,8 +360,12 @@ class LongMemEvalWorkload(Workload):
             if d > 0 and decode_tok > 0:
                 tpots.append(round(d / decode_tok * 1000.0, 2))
 
-        # Evaluate quality metrics via unified quality scorer
+        # Evaluate quality metrics via unified quality scorer (fast heuristic fallback;
+        # canonical semantic grading is performed offline over `sample_records`).
         eval_summary = score_longmemeval_dataset(active_samples, predictions, refusal_triggers=REFUSAL_TRIGGERS)
+        eval_summary["dataset_sha256"] = self.dataset_sha256
+        _tpl = getattr(tok, "chat_template", None)
+        eval_summary["prompt_format"] = "chat_template" if (isinstance(_tpl, str) and bool(_tpl)) else "raw_qa"
         if self.samples_per_task is not None:
             eval_summary["longmem_samples_per_task"] = self.samples_per_task
         if self.seed is not None:
@@ -289,6 +374,8 @@ class LongMemEvalWorkload(Workload):
         eval_summary["longmem_select_by_length"] = self.select_by_length
         eval_summary["longmem_active_samples_count"] = len(active_samples)
 
+        from src.core.quality import is_ans_or_unans
+
         # Calculate per-length-tier breakdown if multiple tiers are present
         tier_scores: dict[str, list[bool]] = {}
         for sample, pred in zip(active_samples, predictions):
@@ -296,7 +383,7 @@ class LongMemEvalWorkload(Workload):
             is_correct = score_longmemeval_sample(
                 pred,
                 sample.get("expected_answer", ""),
-                is_unanswerable=sample.get("unanswerable", False),
+                is_unanswerable=is_ans_or_unans(sample),
                 refusal_triggers=REFUSAL_TRIGGERS,
             )
             tier_scores.setdefault(tier, []).append(is_correct)
@@ -307,7 +394,7 @@ class LongMemEvalWorkload(Workload):
             sample.get("id", f"sample_{idx}"): score_longmemeval_sample(
                 pred,
                 sample.get("expected_answer", ""),
-                is_unanswerable=sample.get("unanswerable", False),
+                is_unanswerable=is_ans_or_unans(sample),
                 refusal_triggers=REFUSAL_TRIGGERS,
             )
             for idx, (sample, pred) in enumerate(zip(active_samples, predictions))
@@ -316,6 +403,7 @@ class LongMemEvalWorkload(Workload):
             sample.get("id", f"sample_{idx}"): pred
             for idx, (sample, pred) in enumerate(zip(active_samples, predictions))
         }
+        eval_summary["sample_records"] = sample_records
 
         if diagnostic_records:
             from src.core.diagnostic import summarize_diagnostic_results
@@ -345,6 +433,7 @@ class LongMemEvalWorkload(Workload):
             request_ttfts_sec=ttfts,
             generated_token_ids=all_token_ids,
             step_logprobs=all_step_logprobs,
+            sample_outputs=sample_outputs,
             extra_summary=eval_summary,
         )
         return out

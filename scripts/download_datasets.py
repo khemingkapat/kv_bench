@@ -34,7 +34,7 @@ LONGMEMEVAL_ORACLE_URL = (
     f"https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/{LONGMEMEVAL_COMMIT_SHA}/longmemeval_oracle.json"
 )
 
-EXPECTED_LONGMEMEVAL_SHA256 = "86af3d2e66fa25343b6992634b57821fd1dd2b88283aa623da3de89656e2f37c"
+EXPECTED_LONGMEMEVAL_SHA256 = "bc37f751ca2c227ff5f6705c3c49aec2e4681b3b48ff231563567bc69d30ad63"
 EXPECTED_PG19_SHA256 = {
     "10146": "f8dd4334fd8d422cd2f9153ffbff9b097611569592d7ca09fc6fe7881336d331",
     "10321": "fedcb2723c2ad091f76d45eb98efd810977e7b906f6fd8cbd815734d1e90c456",
@@ -196,9 +196,23 @@ def generate_mock_pg19(num_books: int = 2) -> dict[str, str]:
     return books
 
 
+def select_quantile_samples(entries: list[dict[str, Any]], k: int) -> list[dict[str, Any]]:
+    """Deterministically select k evenly spaced samples across the natural length spectrum."""
+    ordered = sorted(entries, key=lambda e: (e["approx_tokens"], e["word_count"], e["id"]))
+    n = len(ordered)
+    if k <= 0 or n == 0:
+        return []
+    if n <= k:
+        return ordered
+    if k == 1:
+        return [ordered[n // 2]]
+    indices = [int(round(i * (n - 1) / (k - 1))) for i in range(k)]
+    return [ordered[idx] for idx in indices]
+
+
 def stage_longmemeval(
     output_path: str,
-    target_samples_per_task: int = 10,
+    target_samples_per_task: int = 30,
     dry_run: bool = False,
     force_download: bool = False,
 ) -> dict[str, Any]:
@@ -243,12 +257,17 @@ def stage_longmemeval(
         }
 
         for item in raw_items:
-            raw_type = item.get("question_type", "")
-            mapped_type = TASK_TYPE_MAP.get(raw_type)
-            if not mapped_type:
-                continue
-
             q_id = str(item.get("question_id", ""))
+            raw_type = item.get("question_type", "")
+            is_abs = q_id.endswith("_abs") or raw_type.endswith("_abs")
+
+            if is_abs:
+                mapped_type = "unanswerable_refusal"
+            else:
+                mapped_type = TASK_TYPE_MAP.get(raw_type)
+                if not mapped_type:
+                    continue
+
             question = str(item.get("question", "")).strip()
             raw_ans = item.get("answer", "")
             if isinstance(raw_ans, list):
@@ -269,39 +288,18 @@ def stage_longmemeval(
                 "context": context,
                 "question": question,
                 "expected_answer": answer,
-                "unanswerable": False,
+                "unanswerable": is_abs,
                 "word_count": words,
                 "approx_tokens": approx_tok,
                 "length_tier": tier,
             }
             grouped[mapped_type].append(entry)
 
-        # Create paired unanswerable questions to balance the unanswerable_refusal capability
-        # By taking a sample's context and pairing with a question from a different unrelated session
-        unanswerable_pool = []
-        for i in range(min(target_samples_per_task, len(grouped["fact_recall"]))):
-            source_context = grouped["fact_recall"][i]["context"]
-            u_words = len(source_context.split())
-            u_approx, u_tier = classify_length_tier(u_words)
-            # Query about completely unrelated knowledge not in the context
-            unanswerable_pool.append({
-                "id": f"ur_abs_{i+1:02d}",
-                "task_type": "unanswerable_refusal",
-                "context": source_context,
-                "question": "What is the secret Wi-Fi password and network configuration of the lab?",
-                "expected_answer": "not mentioned",
-                "unanswerable": True,
-                "word_count": u_words,
-                "approx_tokens": u_approx,
-                "length_tier": u_tier,
-            })
-        grouped["unanswerable_refusal"] = unanswerable_pool
-
-        # Select target samples per task
+        # Select target samples per task using deterministic length-quantile sampling
         records = []
         for task, entries in grouped.items():
-            selected = entries[:target_samples_per_task]
-            print(f"  Staging {len(selected)} samples for capability '{task}'")
+            selected = select_quantile_samples(entries, target_samples_per_task)
+            print(f"  Staging {len(selected)} samples for capability '{task}' (from {len(entries)} available)")
             records.extend(selected)
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -313,7 +311,7 @@ def stage_longmemeval(
 
     sha256 = compute_sha256(output_path)
     file_size = os.path.getsize(output_path)
-    if not dry_run and target_samples_per_task == 10:
+    if not dry_run and target_samples_per_task == 30 and EXPECTED_LONGMEMEVAL_SHA256:
         if sha256 != EXPECTED_LONGMEMEVAL_SHA256:
             raise ValueError(
                 f"LongMemEval SHA-256 mismatch: got {sha256}, expected {EXPECTED_LONGMEMEVAL_SHA256}"
@@ -465,8 +463,8 @@ def main() -> None:
     parser.add_argument(
         "--longmemeval-samples-per-task",
         type=int,
-        default=10,
-        help="Target samples per capability for LongMemEval (default: 10, total 50)",
+        default=30,
+        help="Target samples per capability for LongMemEval (default: 30, total 150)",
     )
     parser.add_argument(
         "--pg19-books",

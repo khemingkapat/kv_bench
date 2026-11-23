@@ -46,6 +46,7 @@ class WorkloadOutput:
     # Output tokens, logprobs, and workload-specific summaries
     generated_token_ids: list[int] = field(default_factory=list)
     step_logprobs: list[dict[int, float]] = field(default_factory=list)
+    sample_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     extra_summary: dict[str, Any] = field(default_factory=dict)
 
 

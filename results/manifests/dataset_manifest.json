@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0",
-  "generated_at": "2026-11-11T03:11:59.901724+00:00",
+  "generated_at": "2026-11-22T14:08:31.724739+00:00",
   "is_dry_run": false,
   "datasets": {
     "longmemeval": {
@@ -9,15 +9,15 @@
       "upstream": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_oracle.json",
       "file": {
         "path": "data/longmemeval/longmemeval_benchmark.json",
-        "sha256": "86af3d2e66fa25343b6992634b57821fd1dd2b88283aa623da3de89656e2f37c",
-        "size_bytes": 1167932,
-        "sample_count": 50,
+        "sha256": "bc37f751ca2c227ff5f6705c3c49aec2e4681b3b48ff231563567bc69d30ad63",
+        "size_bytes": 4197494,
+        "sample_count": 150,
         "task_distribution": {
-          "fact_recall": 10,
-          "cross_session_reasoning": 10,
-          "information_update": 10,
-          "relative_timeframe": 10,
-          "unanswerable_refusal": 10
+          "fact_recall": 30,
+          "cross_session_reasoning": 30,
+          "information_update": 30,
+          "relative_timeframe": 30,
+          "unanswerable_refusal": 30
         }
       }
     },

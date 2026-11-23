@@ -276,6 +276,7 @@ def run_benchmark(
                     ctx,
                     target_token_ids=getattr(output, "generated_token_ids", []),
                     target_step_logprobs=getattr(output, "step_logprobs", None),
+                    target_samples=getattr(output, "sample_outputs", None),
                 )
                 extra.update(fidelity)
 
@@ -287,6 +288,9 @@ def run_benchmark(
                     "prompt_tokens": output.prompt_tokens,
                     "generated_tokens": output.generated_tokens,
                 }
+                sample_outputs = getattr(output, "sample_outputs", None)
+                if isinstance(sample_outputs, dict) and sample_outputs:
+                    record["samples"] = sample_outputs
                 if hasattr(output, "extra_summary") and isinstance(output.extra_summary, dict):
                     if "sample_correctness" in output.extra_summary:
                         record["sample_correctness"] = output.extra_summary["sample_correctness"]

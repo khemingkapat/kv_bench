@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `streamingllm_hardware_pytorch_16gb.json`: `VERIFIED` (`05bd5adb4d50…`) | `streamingllm_longmem_pytorch_16gb.json`: `VERIFIED` (`fd5ddd1381cf…`) | `streamingllm_niah_pytorch_16gb.json`: `VERIFIED` (`5f01cee56d9e…`)
+**Artifact Provenance (SHA-256):** `streamingllm_hardware_pytorch_16gb.json`: `VERIFIED` (`05bd5adb4d50…`) | `streamingllm_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`8a0375e67960…`) | `streamingllm_niah_pytorch_16gb.json`: `VERIFIED` (`5f01cee56d9e…`)
 
 ---
 
@@ -48,12 +48,7 @@ StreamingLLM retains a small set of initial 'attention sink' tokens alongside a 
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 0.0000 | 0.0000 | 100.00 |
-| 1024 | 0.0000 | 0.0000 | 100.00 |
-| 2048 | 0.0000 | 0.0000 | 100.00 |
-| 4096 | 10.0221 | 15.4249 | 30.03 |
-| 8192 | 12.3219 | 15.4249 | 15.02 |
-| 16384 | 11.3996 | 15.4249 | 19.79 |
+| 32768 | 12.9800 | 15.4249 | 13.18 |
 
 ![StreamingLLM KL Fidelity](../figures/wp3/streamingllm/kl_fidelity.png)
 
@@ -77,24 +72,21 @@ StreamingLLM retains a small set of initial 'attention sink' tokens alongside a 
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.12 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.13 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.25 | 0.13 | 5/20 | 0 | 15 | 1.00 | 16.00 |
-| 4096 | 0.33 | 0.09 | 6/18 | 1 | 11 | 0.60 | 9.60 |
-| 8192 | 0.31 | 0.08 | 8/26 | 1 | 17 | 0.30 | 4.81 |
-| 16384 | 0.13 | 0.08 | 2/15 | 1 | 12 | 0.15 | 2.39 |
+**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **44.0%** | **66/150** | 37 | 47 | 4 | 88/150 | 0.43 | 6.80 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 45.5% | 50.0% | -4.5% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 50.0% | 45.0% | +5.0% |
-| `relative_timeframe` | 19 | 31.6% | 21.1% | +10.5% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 70.0% | 90.0% | -20.0% |
+| `cross_session_reasoning` | 30 | 3.3% | 43.3% | -40.0% |
+| `information_update` | 30 | 60.0% | 66.7% | -6.7% |
+| `relative_timeframe` | 30 | 10.0% | 30.0% | -20.0% |
+| `unanswerable_refusal` | 30 | 76.7% | 100.0% | -23.3% |
 
 ![StreamingLLM LongMemEval Diagnostics](../figures/wp3/streamingllm/longmem_diagnostics.png)
 
@@ -108,7 +100,7 @@ Tested with 4 sink tokens and a 2,048-token sliding window (2,052 effective toke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 40%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), StreamingLLM records **26/99** (**3** regressions vs. 25/99 baseline; mean retention ratio = **0.68**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), StreamingLLM achieves **66/150 (44.0%)** vs. baseline **99/150 (66.0%)**, with **37** quality regressions and mean KV retention ratio **0.43**.
 
 ### Pros
 
@@ -119,3 +111,4 @@ On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), S
 
 - Elevated PG-19 logit divergence (mean KL = **6.88**, Top-1 = **50.4%**).
 - NIAH retrieval drops to **40%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]`), confirming loss of early/non-local needle tokens.
+- Degrades LongMemEval v2 semantic accuracy to **66/150 (44.0%)** vs. 99/150 (66.0%) baseline (**37** quality regressions).

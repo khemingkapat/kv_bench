@@ -192,6 +192,40 @@ class PyTorchRunner:
 
         return request_outputs
 
+    def _get_eos_token_ids(self) -> set[int]:
+        """Collect all valid integer EOS token IDs from tokenizer and model generation_config."""
+        eos_ids: set[int] = set()
+
+        def _add_eos(val: Any) -> None:
+            if isinstance(val, int) and not isinstance(val, bool):
+                eos_ids.add(val)
+            elif isinstance(val, (list, tuple, set)):
+                for item in val:
+                    if isinstance(item, int) and not isinstance(item, bool):
+                        eos_ids.add(item)
+
+        if self.tokenizer is not None:
+            _add_eos(getattr(self.tokenizer, "eos_token_id", None))
+        gen_cfg = getattr(self.model, "generation_config", None)
+        if gen_cfg is not None:
+            _add_eos(getattr(gen_cfg, "eos_token_id", None))
+        return eos_ids
+
+    def _encode_prompt(self, prompt: str) -> Any:
+        """Encode prompt safely, avoiding duplicate BOS tokens when already chat-templated."""
+        import inspect
+
+        encode_kwargs: dict[str, Any] = {"return_tensors": "pt"}
+        bos_tok = getattr(self.tokenizer, "bos_token", None)
+        if isinstance(bos_tok, str) and bos_tok and prompt.startswith(bos_tok):
+            try:
+                sig = inspect.signature(self.tokenizer.encode)
+                if "add_special_tokens" in sig.parameters:
+                    encode_kwargs["add_special_tokens"] = False
+            except (TypeError, ValueError):
+                pass
+        return self.tokenizer.encode(prompt, **encode_kwargs).to(self.device)
+
     def _generate_single(
         self,
         req_idx: int,
@@ -203,9 +237,10 @@ class PyTorchRunner:
         post_hoc_hook: Any,
         use_cuda: bool,
     ) -> PyTorchRequestOutput:
-            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
+            input_ids = self._encode_prompt(prompt)
             prompt_token_ids = input_ids[0].tolist()
             seq_len = input_ids.shape[1]
+            eos_token_ids = self._get_eos_token_ids()
 
             # Record prefill latency via CUDA events
             start_wall = time.perf_counter()
@@ -257,7 +292,8 @@ class PyTorchRunner:
 
             # Prefill first generated token selection
             next_token = torch.argmax(last_logits, dim=-1, keepdim=True)
-            generated_ids: list[int] = [int(next_token[0, 0].item())]
+            first_tok_id = int(next_token[0, 0].item())
+            generated_ids: list[int] = [first_tok_id]
             step_logprobs: list[dict[int, float]] = []
 
             # Extract step 0 logprobs
@@ -268,43 +304,47 @@ class PyTorchRunner:
                 step_dict[int(top_idx[0, k_idx].item())] = float(top_lp[0, k_idx].item())
             step_logprobs.append(step_dict)
 
-            # Autoregressive Decode Loop
+            # Autoregressive Decode Loop (check EOS on step 0 before decoding further)
             step_events: list[tuple[Any, Any]] = []
             curr_pos = seq_len
+            finish_reason = "stop" if first_tok_id in eos_token_ids else "length"
 
-            for _ in range(max_tokens - 1):
-                if use_cuda:
-                    s_ev = torch.cuda.Event(enable_timing=True)
-                    e_ev = torch.cuda.Event(enable_timing=True)
-                    s_ev.record()
+            if finish_reason != "stop":
+                for _ in range(max_tokens - 1):
+                    if use_cuda:
+                        s_ev = torch.cuda.Event(enable_timing=True)
+                        e_ev = torch.cuda.Event(enable_timing=True)
+                        s_ev.record()
 
-                pos_tensor = torch.tensor([[curr_pos]], dtype=torch.long, device=self.device)
-                with torch.no_grad():
-                    step_out = self.model(
-                        next_token,
-                        past_key_values=cache,
-                        position_ids=pos_tensor,
-                        use_cache=True,
-                    )
+                    pos_tensor = torch.tensor([[curr_pos]], dtype=torch.long, device=self.device)
+                    with torch.no_grad():
+                        step_out = self.model(
+                            next_token,
+                            past_key_values=cache,
+                            position_ids=pos_tensor,
+                            use_cache=True,
+                        )
 
-                if use_cuda:
-                    e_ev.record()
-                    step_events.append((s_ev, e_ev))
+                    if use_cuda:
+                        e_ev.record()
+                        step_events.append((s_ev, e_ev))
 
-                logits_step = step_out.logits[:, -1, :]
-                next_token = torch.argmax(logits_step, dim=-1, keepdim=True)
-                generated_ids.append(int(next_token[0, 0].item()))
+                    logits_step = step_out.logits[:, -1, :]
+                    next_token = torch.argmax(logits_step, dim=-1, keepdim=True)
+                    tok_id = int(next_token[0, 0].item())
+                    generated_ids.append(tok_id)
 
-                lps_step = F.log_softmax(logits_step, dim=-1)
-                top_lp_s, top_idx_s = torch.topk(lps_step, k=min(logprobs_topk, lps_step.shape[-1]), dim=-1)
-                step_d: dict[int, float] = {}
-                for k_i in range(top_lp_s.shape[-1]):
-                    step_d[int(top_idx_s[0, k_i].item())] = float(top_lp_s[0, k_i].item())
-                step_logprobs.append(step_d)
+                    lps_step = F.log_softmax(logits_step, dim=-1)
+                    top_lp_s, top_idx_s = torch.topk(lps_step, k=min(logprobs_topk, lps_step.shape[-1]), dim=-1)
+                    step_d: dict[int, float] = {}
+                    for k_i in range(top_lp_s.shape[-1]):
+                        step_d[int(top_idx_s[0, k_i].item())] = float(top_lp_s[0, k_i].item())
+                    step_logprobs.append(step_d)
 
-                curr_pos += 1
-                if int(next_token[0, 0].item()) == self.tokenizer.eos_token_id:
-                    break
+                    curr_pos += 1
+                    if tok_id in eos_token_ids:
+                        finish_reason = "stop"
+                        break
 
             # Synchronize once after decode loop completes
             decode_sec = 0.0
@@ -331,6 +371,7 @@ class PyTorchRunner:
                 text=gen_text,
                 token_ids=generated_ids,
                 logprobs=step_logprobs,
+                finish_reason=finish_reason,
             )
 
             req_out = PyTorchRequestOutput(
