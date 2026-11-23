@@ -95,6 +95,8 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 
 ![WP-3 LongMemEval Ranking](figures/wp3/overview/longmem_overview.png)
 
+![WP-3 Per-Question Outcome Matrix](figures/wp3/overview/longmem_question_heatmap.png)
+
 ---
 
 ## 4. Key Takeaways for WP-4 (3-Axis Co-Optimization)

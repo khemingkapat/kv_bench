@@ -408,34 +408,32 @@ def plot_longmem_v2_diagnostics(
     out_path: Path,
     lm_res: list[dict] | None = None,
 ) -> None:
-    """Plot 5-panel per-task LongMemEval diagnostics vs. exact prompt_tokens (zero binning).
+    """Plot 5-panel per-task LongMemEval diagnostics (Option A: X = exact prompt_tokens, Y = per-question KL 0-17).
 
-    Left column (5 tasks): exact prompt_tokens dot/strip plot by causal outcome.
-    Right column (5 tasks): exact prompt_tokens vs. per-question KL divergence (0-17)
-    when `sample_fidelity` is present in the raw LongMemEval JSON.
+    Encodes causal outcome with both color and distinct marker shape so every axis
+    is continuous/ordered and zero data resolution is lost to binning.
     """
+    from matplotlib.lines import Line2D
+
     t_samples = judged.get("samples", [])
     ex32 = next((r.get("extra", {}) for r in (lm_res or []) if r.get("requested_ctx") == 32768), {})
     sample_fid = ex32.get("sample_fidelity") or {}
-    has_per_sample_kl = isinstance(sample_fid, dict) and any("kl_mean" in v for v in sample_fid.values())
 
-    ncols = 2 if has_per_sample_kl else 1
     fig, axes = plt.subplots(
         len(CAPABILITIES),
-        ncols,
-        figsize=(12.5 if has_per_sample_kl else 7.8, 10.5),
+        1,
+        figsize=(9.2, 10.8),
         dpi=150,
         sharex=True,
         squeeze=False,
     )
 
     verdict_spec = [
-        ("PASS_FIDELITY_MAINTAINED", "Pass (Maintained)", "#5cb85c", 3),
-        ("UNEXPECTED_GAIN", "Unexpected Gain", "#17becf", 2),
-        ("QUALITY_REGRESSION", "Quality Regression", "#d9534f", 1),
-        ("BASELINE_LIMITATION", "Baseline Limitation", "#f0ad4e", 0),
+        ("PASS_FIDELITY_MAINTAINED", "Pass (Maintained)", "#2ca02c", "o", True),
+        ("UNEXPECTED_GAIN", "Unexpected Gain", "#17becf", "^", True),
+        ("QUALITY_REGRESSION", "Quality Regression", "#d62728", "X", True),
+        ("BASELINE_LIMITATION", "Baseline Limitation", "#e69f00", "o", False),
     ]
-    verdict_color = {k: col for k, _, col, _ in verdict_spec}
     cap_titles = {
         "fact_recall": "Fact Recall",
         "cross_session_reasoning": "Cross-Session Reasoning",
@@ -451,68 +449,74 @@ def plot_longmem_v2_diagnostics(
         c_sub = [s for s in t_samples if s.get("task_type") == cap]
         c_pass = sum(1 for s in c_sub if s.get("correct"))
         c_reg = sum(1 for s in c_sub if s.get("causal_verdict") == "QUALITY_REGRESSION")
-        ax_l = axes[row_idx, 0]
+        ax = axes[row_idx, 0]
 
-        for v_key, v_lbl, v_col, y_pos in verdict_spec:
-            xs = [s["prompt_tokens"] for s in c_sub if s.get("causal_verdict") == v_key]
-            if xs:
-                ax_l.scatter(
+        for v_key, _, v_col, marker, filled in verdict_spec:
+            pts = [
+                (s["prompt_tokens"], sample_fid[s["id"]]["kl_mean"])
+                for s in c_sub
+                if s.get("causal_verdict") == v_key and s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]
+            ]
+            if not pts:
+                continue
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            if filled:
+                ax.scatter(
                     xs,
-                    [y_pos] * len(xs),
+                    ys,
                     color=v_col,
-                    s=36,
-                    alpha=0.85,
+                    marker=marker,
+                    s=48 if marker == "X" else 42,
+                    alpha=0.88,
                     edgecolors="black",
-                    linewidth=0.4,
-                    label=v_lbl if row_idx == 0 else None,
+                    linewidth=0.45,
+                    zorder=4 if marker == "X" else 3,
+                )
+            else:
+                ax.scatter(
+                    xs,
+                    ys,
+                    facecolors="none",
+                    edgecolors=v_col,
+                    marker=marker,
+                    s=42,
+                    alpha=0.9,
+                    linewidth=1.2,
+                    zorder=2,
                 )
 
-        ax_l.set_yticks([0, 1, 2, 3])
-        ax_l.set_yticklabels(["BaseLim", "Regress", "Gain", "Pass"], fontsize=7.5)
-        ax_l.set_ylim(-0.6, 3.6)
-        ax_l.set_xlim(0, xlim_hi)
-        ax_l.set_title(f"{cap_titles.get(cap, cap)} — {c_pass}/{len(c_sub)} pass, {c_reg} regressions", fontsize=9)
-        ax_l.grid(True, axis="x", alpha=0.3)
-
-        if has_per_sample_kl:
-            ax_r = axes[row_idx, 1]
-            for v_key, v_lbl, v_col, _ in verdict_spec:
-                pts = [
-                    (s["prompt_tokens"], sample_fid[s["id"]]["kl_mean"])
-                    for s in c_sub
-                    if s.get("causal_verdict") == v_key and s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]
-                ]
-                if pts:
-                    ax_r.scatter(
-                        [p[0] for p in pts],
-                        [p[1] for p in pts],
-                        color=v_col,
-                        s=34,
-                        alpha=0.85,
-                        edgecolors="black",
-                        linewidth=0.4,
-                    )
-            c_kls = [sample_fid[s["id"]]["kl_mean"] for s in c_sub if s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]]
-            mean_c_kl = float(np.mean(c_kls)) if c_kls else 0.0
-            ax_r.set_ylim(0, 17)
-            ax_r.set_xlim(0, xlim_hi)
-            ax_r.set_ylabel("KL", fontsize=8)
-            ax_r.set_title(f"{cap_titles.get(cap, cap)} — Per-Question KL (mean={mean_c_kl:.2f})", fontsize=9)
-            ax_r.grid(True, alpha=0.3)
+        c_kls = [sample_fid[s["id"]]["kl_mean"] for s in c_sub if s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]]
+        mean_c_kl = float(np.mean(c_kls)) if c_kls else 0.0
+        ax.set_ylim(-0.6, 17.0)
+        ax.set_yticks([0, 4, 8, 12, 16])
+        ax.set_xlim(0, xlim_hi)
+        ax.set_ylabel("KL Div", fontsize=8.5)
+        ax.set_title(
+            f"{cap_titles.get(cap, cap)} — {c_pass}/{len(c_sub)} pass, {c_reg} regressions (mean KL = {mean_c_kl:.2f})",
+            fontsize=9.5,
+        )
+        ax.grid(True, alpha=0.3)
 
     axes[-1, 0].set_xlabel("Exact Prompt Token Length")
-    if has_per_sample_kl:
-        axes[-1, 1].set_xlabel("Exact Prompt Token Length")
-
-    from matplotlib.lines import Line2D
 
     handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=v_col, markeredgecolor="black", markeredgewidth=0.5, markersize=7, label=v_lbl)
-        for _, v_lbl, v_col, _ in verdict_spec
+        Line2D(
+            [0],
+            [0],
+            marker=marker,
+            color="w",
+            markerfacecolor=v_col if filled else "none",
+            markeredgecolor="black" if filled else v_col,
+            markeredgewidth=0.6 if filled else 1.3,
+            markersize=7.5 if marker == "X" else 7,
+            label=v_lbl,
+        )
+        for _, v_lbl, v_col, marker, filled in verdict_spec
     ]
     fig.legend(handles=handles, loc="upper center", ncol=4, fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, 0.995))
-    fig.suptitle(f"{tech['name']} — LongMemEval Per-Task Diagnostics vs. Exact Prompt Length", fontsize=11, y=1.015)
-    fig.tight_layout(rect=[0, 0, 1, 0.965])
+    fig.suptitle(f"{tech['name']} — LongMemEval Per-Question KL & Outcome vs. Exact Prompt Length", fontsize=11, y=1.012)
+    fig.tight_layout(rect=[0, 0, 1, 0.968])
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -1055,6 +1059,95 @@ def plot_overview_figures(
         fig.savefig(OVERVIEW_FIG_DIR / "longmem_overview.png")
         plt.close(fig)
 
+        # Option C: Per-question outcome heatmap across Baseline + all 11 techniques (zero binning)
+        from matplotlib.patches import Patch
+
+        base_samples = base_judged.get("samples", [])
+        ordered_cols: list[dict[str, Any]] = []
+        task_spans: list[tuple[str, int, int, int, int]] = []
+        cap_short_labels = {
+            "fact_recall": "Fact Recall",
+            "cross_session_reasoning": "Cross-Session",
+            "information_update": "Info Update",
+            "relative_timeframe": "Rel. Timeframe",
+            "unanswerable_refusal": "Unanswerable",
+        }
+        col_cursor = 0
+        for cap in CAPABILITIES:
+            c_items = sorted(
+                [s for s in base_samples if s.get("task_type") == cap],
+                key=lambda s: (s.get("prompt_tokens", 0), s["id"]),
+            )
+            if not c_items:
+                continue
+            start_c = col_cursor
+            ordered_cols.extend(c_items)
+            col_cursor += len(c_items)
+            task_spans.append((
+                cap_short_labels.get(cap, cap),
+                start_c,
+                col_cursor,
+                c_items[0].get("prompt_tokens", 0),
+                c_items[-1].get("prompt_tokens", 0),
+            ))
+
+        ranked_techs = sorted(lm_valid, key=lambda s: s["lm_acc_pct"], reverse=True)
+        row_labels = [f"Baseline ({b_val:.1f}%)"] + [f"{s['name']} ({s['lm_acc_pct']:.1f}%)" for s in ranked_techs]
+        # Codes: 0=Baseline Limitation/Fail, 1=Quality Regression, 2=Unexpected Gain, 3=Pass
+        mat = np.zeros((len(row_labels), len(ordered_cols)), dtype=int)
+        base_map = {s["id"]: bool(s["correct"]) for s in base_samples}
+        for j, col_s in enumerate(ordered_cols):
+            mat[0, j] = 3 if base_map.get(col_s["id"], False) else 0
+
+        verdict_code = {
+            "BASELINE_LIMITATION": 0,
+            "QUALITY_REGRESSION": 1,
+            "UNEXPECTED_GAIN": 2,
+            "PASS_FIDELITY_MAINTAINED": 3,
+        }
+        for r_idx, s in enumerate(ranked_techs, start=1):
+            t_judged = load_json(GRADES_DIR / f"{s['id']}_judged.json")
+            t_map = {item["id"]: verdict_code.get(item.get("causal_verdict", ""), 0) for item in (t_judged or {}).get("samples", [])}
+            for j, col_s in enumerate(ordered_cols):
+                mat[r_idx, j] = t_map.get(col_s["id"], 0)
+
+        fig, ax = plt.subplots(figsize=(13.5, 4.8), dpi=160)
+        cmap = matplotlib.colors.ListedColormap(["#e8d5b7", "#d62728", "#17becf", "#2ca02c"])
+        ax.imshow(mat, cmap=cmap, vmin=0, vmax=3, aspect="auto", interpolation="nearest")
+
+        # Horizontal separator under Baseline and vertical separators between tasks
+        ax.axhline(0.5, color="black", linewidth=1.6)
+        for idx_t, (t_lbl, s_c, e_c, min_t, max_t) in enumerate(task_spans):
+            if idx_t > 0:
+                ax.axvline(s_c - 0.5, color="black", linewidth=1.4)
+            mid = (s_c + e_c - 1) / 2.0
+            ax.text(
+                mid,
+                -0.85,
+                f"{t_lbl}\n({min_t/1000:.1f}K → {max_t/1000:.1f}K tok)",
+                ha="center",
+                va="bottom",
+                fontsize=8.2,
+                fontweight="bold",
+            )
+
+        ax.set_yticks(np.arange(len(row_labels)))
+        ax.set_yticklabels(row_labels, fontsize=8.5)
+        ax.set_xticks([])
+        ax.set_xlabel("150 Official LongMemEval Questions (Grouped by Task, Sorted Shortest → Longest Prompt Tokens Within Each Task)", fontsize=8.5)
+        ax.set_title("WP-3 Per-Question LongMemEval Outcome Matrix (Zero Binning)", fontsize=11, pad=36)
+
+        legend_patches = [
+            Patch(facecolor="#2ca02c", edgecolor="black", linewidth=0.4, label="Pass (Maintained)"),
+            Patch(facecolor="#17becf", edgecolor="black", linewidth=0.4, label="Unexpected Gain"),
+            Patch(facecolor="#d62728", edgecolor="black", linewidth=0.4, label="Quality Regression"),
+            Patch(facecolor="#e8d5b7", edgecolor="black", linewidth=0.4, label="Baseline Limitation / Fail"),
+        ]
+        ax.legend(handles=legend_patches, loc="upper center", bbox_to_anchor=(0.5, -0.11), ncol=4, fontsize=8.5, frameon=True)
+        fig.tight_layout()
+        fig.savefig(OVERVIEW_FIG_DIR / "longmem_question_heatmap.png", bbox_inches="tight")
+        plt.close(fig)
+
 
 def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[str, Any], b_pass: int) -> tuple[str, str]:
     """Compute upside and trade-off strings dynamically from parsed summary metrics (no hardcoded numbers)."""
@@ -1213,7 +1306,7 @@ def write_executive_report(
         "",
         "![WP-3 Decode Latency Overview](figures/wp3/overview/tpot_overview_32k.png)",
         "",
-        *(["![WP-3 LongMemEval Ranking](figures/wp3/overview/longmem_overview.png)", ""] if use_v2 else []),
+        *(["![WP-3 LongMemEval Ranking](figures/wp3/overview/longmem_overview.png)", "", "![WP-3 Per-Question Outcome Matrix](figures/wp3/overview/longmem_question_heatmap.png)", ""] if use_v2 else []),
         "---",
         "",
         "## 4. Key Takeaways for WP-4 (3-Axis Co-Optimization)",
