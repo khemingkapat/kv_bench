@@ -68,11 +68,9 @@ TurboQuant applies asymmetric low-bit quantization to Keys and Values, using a W
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![TurboQuant NIAH Heatmap](../figures/wp3/turboquant/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,7 +98,7 @@ Tested at 4-bit Keys and 3-bit Values (qjl_v=True, qjl_k=False, ~3.66x theoretic
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), TurboQuant achieves **80/150 (53.3%)** vs. baseline **99/150 (66.0%)**, with **20** quality regressions and mean KV retention ratio **1.00**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), TurboQuant achieves **80/150 (53.3%)** vs. baseline **99/150 (66.0%)**, with **20** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
@@ -112,4 +110,4 @@ On LongMemEval v2 (150 quantile-sampled official questions at native length up t
 - Decode latency at 32K is **29.62x slower** than baseline (**864.1 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**13265 B/tok**, Host RSS Δ = **7529 MB**).
 - Elevated PG-19 logit divergence (mean KL = **11.89**, Top-1 = **14.5%**).
-- Degrades LongMemEval v2 semantic accuracy to **80/150 (53.3%)** vs. 99/150 (66.0%) baseline (**20** quality regressions).
+- Degrades LongMemEval semantic accuracy to **80/150 (53.3%)** vs. 99/150 (66.0%) baseline (**20** quality regressions).

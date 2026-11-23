@@ -68,11 +68,9 @@ ArkVale organizes the KV cache into fixed-size pages offloaded to CPU RAM and ma
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![ArkVale NIAH Heatmap](../figures/wp3/arkvale/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,13 +98,13 @@ Tested with page_size=16, active_pages_budget=16, and exempt_early_layers=2. Whi
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ArkVale achieves **89/150 (59.3%)** vs. baseline **99/150 (66.0%)**, with **14** quality regressions and mean KV retention ratio **0.11**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ArkVale achieves **89/150 (59.3%)** vs. baseline **99/150 (66.0%)**, with **14** quality regressions and mean KV retention ratio **0.11**.
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **31.7%** (9033 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
-- Preserves strong LongMemEval v2 semantic accuracy (**89/150 = 59.3%** vs. 99/150 = 66.0% baseline; **14** quality regressions).
+- Preserves strong LongMemEval semantic accuracy (**89/150 = 59.3%** vs. 99/150 = 66.0% baseline; **14** quality regressions).
 
 ### Cons
 

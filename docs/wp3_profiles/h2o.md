@@ -68,11 +68,9 @@ H2O partitions the fixed KV budget between a recent local window and a 'heavy-hi
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **20.0%** |
 
-![H2O (Heavy-Hitter Oracle) NIAH Heatmap](../figures/wp3/h2o/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,7 +98,7 @@ Tested with 1,024 heavy-hitter tokens + 1,024 recent window tokens (2,048 total 
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 20%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), H2O (Heavy-Hitter Oracle) achieves **80/150 (53.3%)** vs. baseline **99/150 (66.0%)**, with **22** quality regressions and mean KV retention ratio **0.43**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), H2O (Heavy-Hitter Oracle) achieves **80/150 (53.3%)** vs. baseline **99/150 (66.0%)**, with **22** quality regressions and mean KV retention ratio **0.43**.
 
 ### Pros
 
@@ -112,4 +110,4 @@ On LongMemEval v2 (150 quantile-sampled official questions at native length up t
 - High host-device transfer volume at 32K (**2005976 B/tok**, Host RSS Δ = **6874 MB**).
 - Elevated PG-19 logit divergence (mean KL = **6.55**, Top-1 = **52.5%**).
 - NIAH retrieval drops to **20%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]`), confirming loss of early/non-local needle tokens.
-- Degrades LongMemEval v2 semantic accuracy to **80/150 (53.3%)** vs. 99/150 (66.0%) baseline (**22** quality regressions).
+- Degrades LongMemEval semantic accuracy to **80/150 (53.3%)** vs. 99/150 (66.0%) baseline (**22** quality regressions).

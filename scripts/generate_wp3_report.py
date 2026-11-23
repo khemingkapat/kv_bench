@@ -380,10 +380,26 @@ def plot_kl_fidelity(tech: dict, pg_kl: tuple, lm_kl: tuple, out_path: Path) -> 
 
     if lm_kl[0]:
         ctxs, km, _, t1 = lm_kl
-        ax1.plot(ctxs, km, "^-", color="#1f77b4", linewidth=1.8, label="LongMemEval KL Mean")
-        ax2.plot(ctxs, t1, "^--", color="#ff7f0e", linewidth=1.8, label="LongMemEval Top-1 (%)")
+        if len(ctxs) == 1:
+            ax1.axhline(
+                km[0],
+                color="#1f77b4",
+                linestyle="-.",
+                linewidth=1.8,
+                label=f"LongMemEval Mean KL ({km[0]:.2f})",
+            )
+            ax2.axhline(
+                t1[0],
+                color="#ff7f0e",
+                linestyle="-.",
+                linewidth=1.8,
+                label=f"LongMemEval Top-1 ({t1[0]:.1f}%)",
+            )
+        else:
+            ax1.plot(ctxs, km, "^-", color="#1f77b4", linewidth=1.8, label="LongMemEval KL Mean")
+            ax2.plot(ctxs, t1, "^--", color="#ff7f0e", linewidth=1.8, label="LongMemEval Top-1 (%)")
 
-    all_ctxs = sorted(set(pg_kl[0]) | set(lm_kl[0]))
+    all_ctxs = sorted(set(pg_kl[0]) | (set(lm_kl[0]) if len(lm_kl[0]) > 1 else set()))
     for ax in (ax1, ax2):
         ax.set_xscale("log", base=2)
         if all_ctxs:
@@ -393,41 +409,11 @@ def plot_kl_fidelity(tech: dict, pg_kl: tuple, lm_kl: tuple, out_path: Path) -> 
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
 
-    ax1.set_title(f"{tech['name']} — KL Divergence (By Workload)")
+    ax1.set_title(f"{tech['name']} — KL Divergence (PG-19 Curve & LongMemEval Mean)")
     ax1.set_ylabel("KL Divergence")
     ax2.set_ylim(-5, 105)
     ax2.set_title(f"{tech['name']} — Top-1 Token Agreement")
     ax2.set_ylabel("Top-1 Agreement (%)")
-
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-
-
-def plot_niah_heatmap(tech: dict, ni_res: list[dict], out_path: Path) -> None:
-    ctxs = [r["requested_ctx"] for r in ni_res]
-    depths = ni_res[0]["extra"]["niah_depths"]
-    mat = np.zeros((len(depths), len(ctxs)), dtype=float)
-    for j, r in enumerate(ni_res):
-        grid = {g["depth"]: g["retrieved"] for g in r["extra"]["niah_grid"]}
-        for i, d in enumerate(depths):
-            mat[i, j] = grid.get(d, 0.0)
-
-    fig, ax = plt.subplots(figsize=(5.5, 4.8), dpi=150)
-    cmap = matplotlib.colors.ListedColormap(["#d9534f", "#5cb85c"])
-    ax.imshow(mat, cmap=cmap, vmin=0, vmax=1, aspect="auto")
-    ax.set_xticks(range(len(ctxs)))
-    ax.set_xticklabels([str(c) for c in ctxs])
-    ax.set_yticks(range(len(depths)))
-    ax.set_yticklabels([f"{d:.1f}" for d in depths])
-    ax.set_xlabel("Context Length (tokens)")
-    ax.set_ylabel("Needle Depth (0.0 = Start, 0.9 = End)")
-    ax.set_title(f"{tech['name']} — NIAH Exact-Match Retrieval")
-
-    for i in range(len(depths)):
-        for j in range(len(ctxs)):
-            lbl = "PASS" if mat[i, j] >= 0.5 else "FAIL"
-            ax.text(j, i, lbl, ha="center", va="center", color="white", fontsize=8, fontweight="bold")
 
     fig.tight_layout()
     fig.savefig(out_path)
@@ -637,16 +623,16 @@ def build_diagnostic_narrative(
         ret = float(np.mean([r["extra"].get("diag_mean_overall_retention_ratio", 0.0) for r in lm_res])) if lm_res else 0.0
         if passes >= b_pass_v2 - 10:
             pros.append(
-                f"Preserves strong LongMemEval v2 semantic accuracy (**{passes}/{tot} = {acc_pct:.1f}%** vs. "
+                f"Preserves strong LongMemEval semantic accuracy (**{passes}/{tot} = {acc_pct:.1f}%** vs. "
                 f"{b_pass_v2}/{tot} = {b_pct_v2:.1f}% baseline; **{regs}** quality regressions)."
             )
         else:
             cons.append(
-                f"Degrades LongMemEval v2 semantic accuracy to **{passes}/{tot} ({acc_pct:.1f}%)** vs. "
+                f"Degrades LongMemEval semantic accuracy to **{passes}/{tot} ({acc_pct:.1f}%)** vs. "
                 f"{b_pass_v2}/{tot} ({b_pct_v2:.1f}%) baseline (**{regs}** quality regressions)."
             )
         reasons.append(
-            f"On LongMemEval v2 ({tot} quantile-sampled official questions at native length up to 32K, chat-templated, "
+            f"On LongMemEval ({tot} quantile-sampled official questions at native length up to 32K, chat-templated, "
             f"`max_tokens=128`, semantically graded), {tech['name']} achieves **{passes}/{tot} ({acc_pct:.1f}%)** vs. "
             f"baseline **{b_pass_v2}/{tot} ({b_pct_v2:.1f}%)**, with **{regs}** quality regressions and mean KV retention ratio **{ret:.2f}**."
         )
@@ -657,13 +643,13 @@ def build_diagnostic_narrative(
         ret = float(np.mean([r["extra"].get("diag_mean_overall_retention_ratio", 0.0) for r in lm_res]))
         if passes < b_lm_pass * 0.7:
             cons.append(
-                f"Severe WP-3 LongMemEval collapse (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} legacy baseline; "
-                f"**{regs}** quality regressions, excluded from LongMemEval v2)."
+                f"Severe LongMemEval collapse (**{passes}/{tot}** vs. {b_lm_pass}/{b_lm_tot} prior baseline; "
+                f"**{regs}** quality regressions, excluded from full 150-question sweep)."
             )
         reasons.append(
-            f"On legacy WP-3 LongMemEval ({tot} raw substring evaluations across 512–16,384 tokens), {tech['name']} recorded **{passes}/{tot}** "
-            f"(**{regs}** regressions vs. {b_lm_pass}/{b_lm_tot} legacy baseline; mean retention ratio = **{ret:.2f}**). "
-            "*Excluded from LongMemEval v2 due to catastrophic implementation collapse (0% NIAH).*"
+            f"On the prior LongMemEval screening sweep ({tot} substring evaluations), {tech['name']} recorded **{passes}/{tot}** "
+            f"(**{regs}** regressions; mean retention ratio = **{ret:.2f}**). "
+            "*Excluded from the full 150-question LongMemEval sweep due to catastrophic implementation collapse (0% NIAH).*"
         )
 
     return "\n\n".join(reasons), pros, cons
@@ -704,8 +690,6 @@ def write_technique_profile(
         plot_hardware_sweep(tech, hw_res, base_hw, fig_dir / "hardware_sweep.png")
     if pg_kl[0] or lm_kl[0]:
         plot_kl_fidelity(tech, pg_kl, lm_kl, fig_dir / "kl_fidelity.png")
-    if ni_res:
-        plot_niah_heatmap(tech, ni_res, fig_dir / "niah_heatmap.png")
     if judged and base_judged:
         plot_longmem_v2_diagnostics(tech, judged, base_judged, fig_dir / "longmem_diagnostics.png")
     elif lm_res:
@@ -787,7 +771,7 @@ def write_technique_profile(
             ]
             lines.append(f"| {d:.1f} | " + " | ".join(row_vals) + " |")
         acc_row = "| **Overall Accuracy** | " + " | ".join(f"**{r['extra']['niah_accuracy']*100:.1f}%**" for r in ni_res) + " |"
-        lines.extend([acc_row, "", f"![{tech['name']} NIAH Heatmap](../figures/wp3/{tid}/niah_heatmap.png)", ""])
+        lines.extend([acc_row, ""])
 
     lines.extend(["### 2.4 LongMemEval & Post-Hoc Diagnostics", ""])
     if judged and base_judged:
@@ -796,7 +780,7 @@ def write_technique_profile(
         eos_stops = sum(1 for s in samples_j if s.get("finish_reason") == "stop")
         ex32 = next((r["extra"] for r in (lm_res or []) if r["requested_ctx"] == 32768), {})
         lines.extend([
-            "**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**",
+            "**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**",
             "",
             "| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |",
             "|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|",
@@ -960,9 +944,9 @@ def plot_overview_figures(
             bbox={"boxstyle": "round,pad=0.3", "facecolor": "#f8f9fa", "edgecolor": "#cccccc"},
         )
     if use_v2:
-        ax.set_title("WP-3 Pareto Trade-Off: 32K Peak VRAM vs. LongMemEval v2 Semantic Accuracy")
+        ax.set_title("WP-3 Pareto Trade-Off: 32K Peak VRAM vs. LongMemEval Semantic Accuracy")
         ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
-        ax.set_ylabel("LongMemEval v2 Semantic Accuracy (%, 150q @ 32K) — Higher is Better")
+        ax.set_ylabel("LongMemEval Semantic Accuracy (%, 150q @ 32K) — Higher is Better")
     else:
         ax.set_title("WP-3 Trade-Off: 32K Peak VRAM vs. Raw LongMemEval Passes (Collapse-Only)*")
         ax.set_xlabel("Peak Allocated VRAM at 32K (MB) — Lower is Better")
@@ -973,25 +957,72 @@ def plot_overview_figures(
     fig.savefig(OVERVIEW_FIG_DIR / "pareto_vram_vs_quality.png")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(8.5, 5.0), dpi=150)
-    valid = [s for s in summaries if s["tpot_32k"] is not None]
+    # Sorted Decode TPOT horizontal bar chart (ascending: fastest at top)
+    fig, ax = plt.subplots(figsize=(8.8, 5.2), dpi=150)
+    valid = sorted([s for s in summaries if s["tpot_32k"] is not None], key=lambda s: s["tpot_32k"])
     names = [s["name"] for s in valid]
     tpots = [s["tpot_32k"] for s in valid]
     cols = [axis_colors.get(s["primary_axis"], "#333333") for s in valid]
     y = np.arange(len(names))
     ax.barh(y, tpots, color=cols, alpha=0.88)
+    for idx, val in enumerate(tpots):
+        ax.text(val * 1.06, idx, f"{val:.1f} ms", va="center", fontsize=8)
     ax.axvline(b32["tpot_mean_ms"], color="#d62728", linestyle="--", linewidth=1.5, label=f"Baseline TPOT ({b32['tpot_mean_ms']:.1f} ms)")
     ax.set_yticks(y)
     ax.set_yticklabels(names)
     ax.invert_yaxis()
     ax.set_xscale("log")
+    ax.set_xlim(right=max(tpots) * 1.9)
     ax.set_xlabel("Mean Decode TPOT at 32K (ms/token, log scale) — Lower is Faster")
-    ax.set_title("WP-3 Decode Latency at 32K Context (16 GiB Cap)")
+    ax.set_title("WP-3 Decode Latency at 32K Context (Ranked Fastest → Slowest)")
     ax.grid(True, axis="x", alpha=0.3)
-    ax.legend(fontsize=8.5)
+    ax.legend(fontsize=8.5, loc="lower right")
     fig.tight_layout()
     fig.savefig(OVERVIEW_FIG_DIR / "tpot_overview_32k.png")
     plt.close(fig)
+
+    # Dedicated LongMemEval overview: ranked Semantic Accuracy (desc) & ranked Mean KL (asc)
+    if use_v2:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.2, 4.8), dpi=150)
+        lm_valid = [s for s in summaries if s.get("lm_v2") and s["lm_acc_pct"] is not None]
+
+        # Left: Semantic Accuracy descending (best at top)
+        acc_sorted = sorted(lm_valid, key=lambda s: s["lm_acc_pct"], reverse=True)
+        y1 = np.arange(len(acc_sorted))
+        vals1 = [s["lm_acc_pct"] for s in acc_sorted]
+        cols1 = [axis_colors.get(s["primary_axis"], "#333333") for s in acc_sorted]
+        ax1.barh(y1, vals1, color=cols1, alpha=0.88)
+        for idx, s in enumerate(acc_sorted):
+            ax1.text(s["lm_acc_pct"] + 0.8, idx, f"{s['lm_acc_pct']:.1f}% ({s['lm_pass']}/{s['lm_tot']})", va="center", fontsize=8)
+        ax1.axvline(b_val, color="#d62728", linestyle="--", linewidth=1.5, label=f"Baseline ({b_val:.1f}%)")
+        ax1.set_yticks(y1)
+        ax1.set_yticklabels([s["name"] for s in acc_sorted])
+        ax1.invert_yaxis()
+        ax1.set_xlim(0, 86)
+        ax1.set_xlabel("Semantic Accuracy (%, 150q @ 32K) — Higher is Better")
+        ax1.set_title("LongMemEval Accuracy (Ranked Highest → Lowest)")
+        ax1.grid(True, axis="x", alpha=0.3)
+        ax1.legend(fontsize=8, loc="lower right")
+
+        # Right: Mean KL ascending (lowest drift at top)
+        kl_sorted = sorted([s for s in lm_valid if s["lm_kl"] is not None], key=lambda s: s["lm_kl"])
+        y2 = np.arange(len(kl_sorted))
+        vals2 = [s["lm_kl"] for s in kl_sorted]
+        cols2 = [axis_colors.get(s["primary_axis"], "#333333") for s in kl_sorted]
+        ax2.barh(y2, vals2, color=cols2, alpha=0.88)
+        for idx, val in enumerate(vals2):
+            ax2.text(val + 0.2, idx, f"{val:.2f}", va="center", fontsize=8)
+        ax2.set_yticks(y2)
+        ax2.set_yticklabels([s["name"] for s in kl_sorted])
+        ax2.invert_yaxis()
+        ax2.set_xlim(0, max(vals2) * 1.18)
+        ax2.set_xlabel("Per-Sample Mean KL Divergence — Lower is Better")
+        ax2.set_title("LongMemEval Logit Drift (Ranked Lowest → Highest KL)")
+        ax2.grid(True, axis="x", alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(OVERVIEW_FIG_DIR / "longmem_overview.png")
+        plt.close(fig)
 
 
 def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[str, Any], b_pass: int) -> tuple[str, str]:
@@ -1025,15 +1056,15 @@ def format_dynamic_spotlight(s: dict[str, Any], tech: dict[str, Any], b32: dict[
         if s.get("lm_v2"):
             if s["lm_pass"] >= b_pass - 10:
                 upside_parts.append(
-                    f"**{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%) LongMemEval v2** ({s['lm_reg']} regressions)"
+                    f"**{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%) LongMemEval** ({s['lm_reg']} regressions)"
                 )
             else:
                 caveat_parts.append(
-                    f"LongMemEval v2 drops to **{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%)** ({s['lm_reg']} regressions)"
+                    f"LongMemEval drops to **{s['lm_pass']}/{s['lm_tot']} ({s['lm_acc_pct']:.1f}%)** ({s['lm_reg']} regressions)"
                 )
         elif s["lm_pass"] < 18:
             caveat_parts.append(
-                f"WP-3 LongMemEval collapse (**{s['lm_pass']}/{s['lm_tot']}**, excluded from v2)"
+                f"LongMemEval collapse (**{s['lm_pass']}/{s['lm_tot']}* **, excluded from full 150q sweep)"
             )
 
     if s["lm_kl"] is not None and s["lm_kl"] < 6.0:
@@ -1061,16 +1092,16 @@ def write_executive_report(
     note_block = (
         [
             "> [!NOTE]",
-            "> **LongMemEval v2 Methodology:** All 9 working techniques + Baseline were re-evaluated under the overhauled "
-            "LongMemEval v2 harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability "
+            "> **LongMemEval Evaluation Protocol:** All 9 working techniques + Baseline were evaluated under the canonical "
+            "LongMemEval harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability "
             "including all 30 official `_abs` unanswerables, Qwen chat template, `max_tokens=128` + multi-EOS stopping, per-sample KL alignment, "
-            "and decoupled offline semantic grading). `HeadQ` (`0/99*`) and `EpiCache` (`10/99*`) suffered catastrophic collapse in WP-3 (`0%` NIAH) "
-            "and retain their legacy WP-3 collapse counts.",
+            "and decoupled offline semantic grading). `HeadQ` (`0/99*`) and `EpiCache` (`10/99*`) suffered catastrophic collapse (`0%` NIAH) "
+            "in initial screening and retain their screening collapse counts.",
         ]
         if use_v2
         else [
             "> [!NOTE]",
-            "> **LongMemEval Methodology Caveat (WP-3):** Raw `LongMem Pass` counts below (`X/99`) reflect the WP-3 substring-graded harness.",
+            "> **LongMemEval Note:** Raw `LongMem Pass` counts below (`X/99`) reflect substring-graded screening.",
         ]
     )
 
@@ -1090,7 +1121,7 @@ def write_executive_report(
         "",
         "## 1. Cross-Technique Summary Matrix",
         "",
-        "| WP | Technique | Primary Axis | 32K VRAM (MB) | 32K TPOT (ms) | 32K Host RSS Δ (MB) | 32K Memcpy (B/tok) | PG-19 KL | LongMem KL | NIAH (2K / 4K) | LongMem v2 Semantic | Regressions | Profile |",
+        "| WP | Technique | Primary Axis | 32K VRAM (MB) | 32K TPOT (ms) | 32K Host RSS Δ (MB) | 32K Memcpy (B/tok) | PG-19 KL | LongMem KL | NIAH (2K / 4K) | LongMem Semantic | Regressions | Profile |",
         "|:---:|---|:---:|---:|---:|---:|---:|---:|---:|:---:|:---:|---:|---|",
         f"| WP2 | **PyTorch SDPA Baseline** | — | **{b32['peak_alloc_mb']:.0f}** | **{b32['tpot_mean_ms']:.1f}** | **{b32['host_rss_delta_mb']:.0f}** | **{b32['memcpy_bytes_per_token']:.0f}** | — | — | — | {b_lm_cell} | **0** | [`baseline_pytorch_16gb.json`](../results/baseline_pytorch_16gb.json) |",
     ]
@@ -1146,12 +1177,13 @@ def write_executive_report(
     lines.extend([
         "---",
         "",
-        "## 3. Pareto & Latency Overview",
+        "## 3. Pareto, Latency & LongMemEval Overview",
         "",
         "![WP-3 Pareto Trade-Off](figures/wp3/overview/pareto_vram_vs_quality.png)",
         "",
         "![WP-3 Decode Latency Overview](figures/wp3/overview/tpot_overview_32k.png)",
         "",
+        *(["![WP-3 LongMemEval Ranking](figures/wp3/overview/longmem_overview.png)", ""] if use_v2 else []),
         "---",
         "",
         "## 4. Key Takeaways for WP-4 (3-Axis Co-Optimization)",

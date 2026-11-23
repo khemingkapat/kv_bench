@@ -68,11 +68,9 @@ InfiniGen speculatively prefetches important KV blocks from CPU memory one layer
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![InfiniGen NIAH Heatmap](../figures/wp3/infinigen/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,12 +98,12 @@ Tested with k_proxy_ratio=0.3, alpha_threshold=4.0, and max_budget_ratio=0.35. M
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), InfiniGen achieves **91/150 (60.7%)** vs. baseline **99/150 (66.0%)**, with **13** quality regressions and mean KV retention ratio **1.00**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), InfiniGen achieves **91/150 (60.7%)** vs. baseline **99/150 (66.0%)**, with **13** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
-- Preserves strong LongMemEval v2 semantic accuracy (**91/150 = 60.7%** vs. 99/150 = 66.0% baseline; **13** quality regressions).
+- Preserves strong LongMemEval semantic accuracy (**91/150 = 60.7%** vs. 99/150 = 66.0% baseline; **13** quality regressions).
 
 ### Cons
 

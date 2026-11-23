@@ -73,8 +73,6 @@ HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits
 | 0.9 | FAIL | FAIL |
 | **Overall Accuracy** | **0.0%** | **0.0%** |
 
-![HeadQ NIAH Heatmap](../figures/wp3/headq/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
 | Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
@@ -108,7 +106,7 @@ Tested with key_bits=2, val_bits=4, pca_rank=4, and sidecode_bits=4. At 2-bit ke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 0%, 4096: 0%**.
 
-On legacy WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), HeadQ recorded **0/99** (**25** regressions vs. 25/99 legacy baseline; mean retention ratio = **1.00**). *Excluded from LongMemEval v2 due to catastrophic implementation collapse (0% NIAH).*
+On the prior LongMemEval screening sweep (99 substring evaluations), HeadQ recorded **0/99** (**25** regressions; mean retention ratio = **1.00**). *Excluded from the full 150-question LongMemEval sweep due to catastrophic implementation collapse (0% NIAH).*
 
 ### Pros
 
@@ -119,4 +117,4 @@ On legacy WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tok
 - Decode latency at 32K is **2.77x slower** than baseline (**80.9 ms/tok** vs. 29.2 ms/tok).
 - Elevated PG-19 logit divergence (mean KL = **13.52**, Top-1 = **2.0%**).
 - NIAH retrieval drops to **0%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`), confirming loss of early/non-local needle tokens.
-- Severe WP-3 LongMemEval collapse (**0/99** vs. 25/99 legacy baseline; **25** quality regressions, excluded from LongMemEval v2).
+- Severe LongMemEval collapse (**0/99** vs. 25/99 prior baseline; **25** quality regressions, excluded from full 150-question sweep).

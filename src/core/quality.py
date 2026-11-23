@@ -222,26 +222,40 @@ def evaluate_fidelity_against_reference(
             total_matches = 0
             total_compared = 0
             all_kl_vals: list[float] = []
+            sample_fidelity: dict[str, dict[str, float]] = {}
             for sid in matched_ids:
                 r_toks = ref_samples[sid].get("token_ids", [])
                 t_toks = target_samples[sid].get("token_ids", [])
                 cmp_len = min(len(r_toks), len(t_toks))
+                s_matches = 0
                 if cmp_len > 0:
-                    total_matches += sum(1 for i in range(cmp_len) if r_toks[i] == t_toks[i])
+                    s_matches = sum(1 for i in range(cmp_len) if r_toks[i] == t_toks[i])
+                    total_matches += s_matches
                     total_compared += cmp_len
 
                 r_lps = ref_samples[sid].get("step_logprobs") or []
                 t_lps = target_samples[sid].get("step_logprobs") or []
                 lp_steps = min(len(r_lps), len(t_lps))
+                s_kls: list[float] = []
                 for i in range(lp_steps):
                     p_dist = _normalize_logprobs(r_lps[i])
                     q_dist = _normalize_logprobs(t_lps[i])
-                    all_kl_vals.append(compute_kl_divergence_from_probs(p_dist, q_dist))
+                    kl_val = compute_kl_divergence_from_probs(p_dist, q_dist)
+                    all_kl_vals.append(kl_val)
+                    s_kls.append(kl_val)
+
+                sf_entry: dict[str, float] = {
+                    "top1": round(s_matches / cmp_len, 4) if cmp_len > 0 else 0.0,
+                }
+                if s_kls:
+                    sf_entry["kl_mean"] = round(sum(s_kls) / len(s_kls), 5)
+                sample_fidelity[sid] = sf_entry
 
             res: dict[str, Any] = {
                 "top1_agreement": round(total_matches / total_compared, 4) if total_compared > 0 else 0.0,
                 "fidelity_alignment": "per_sample",
                 "fidelity_matched_samples": len(matched_ids),
+                "sample_fidelity": sample_fidelity,
             }
             if all_kl_vals:
                 res["kl_div_mean"] = round(sum(all_kl_vals) / len(all_kl_vals), 5)

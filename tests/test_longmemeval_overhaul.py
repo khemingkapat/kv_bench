@@ -151,6 +151,9 @@ class TestPerSampleFidelityAlignment(unittest.TestCase):
             self.assertEqual(res["fidelity_alignment"], "per_sample")
             self.assertEqual(res["top1_agreement"], 1.0)
             self.assertAlmostEqual(res["kl_div_mean"], 0.0, places=5)
+            self.assertEqual(res["sample_fidelity"]["q1"]["top1"], 1.0)
+            self.assertEqual(res["sample_fidelity"]["q2"]["top1"], 1.0)
+            self.assertAlmostEqual(res["sample_fidelity"]["q2"]["kl_mean"], 0.0, places=5)
 
 
 class TestPyTorchRunnerMultiEOS(unittest.TestCase):

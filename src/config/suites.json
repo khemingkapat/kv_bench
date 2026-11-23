@@ -63,7 +63,7 @@
     "force_longmem_ref": false,
     "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768]
   },
-  "longmem_v2": {
+  "longmem_eval": {
     "techniques": [
       "qserve_kv4",
       "streamingllm",

@@ -68,11 +68,9 @@ StreamingLLM retains a small set of initial 'attention sink' tokens alongside a 
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **40.0%** |
 
-![StreamingLLM NIAH Heatmap](../figures/wp3/streamingllm/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,7 +98,7 @@ Tested with 4 sink tokens and a 2,048-token sliding window (2,052 effective toke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 40%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), StreamingLLM achieves **66/150 (44.0%)** vs. baseline **99/150 (66.0%)**, with **37** quality regressions and mean KV retention ratio **0.43**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), StreamingLLM achieves **66/150 (44.0%)** vs. baseline **99/150 (66.0%)**, with **37** quality regressions and mean KV retention ratio **0.43**.
 
 ### Pros
 
@@ -111,4 +109,4 @@ On LongMemEval v2 (150 quantile-sampled official questions at native length up t
 
 - Elevated PG-19 logit divergence (mean KL = **6.88**, Top-1 = **50.4%**).
 - NIAH retrieval drops to **40%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]`), confirming loss of early/non-local needle tokens.
-- Degrades LongMemEval v2 semantic accuracy to **66/150 (44.0%)** vs. 99/150 (66.0%) baseline (**37** quality regressions).
+- Degrades LongMemEval semantic accuracy to **66/150 (44.0%)** vs. 99/150 (66.0%) baseline (**37** quality regressions).

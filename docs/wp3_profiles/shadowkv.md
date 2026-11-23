@@ -68,11 +68,9 @@ ShadowKV keeps low-rank SVD-compressed Key representations and sparse outlier ch
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![ShadowKV NIAH Heatmap](../figures/wp3/shadowkv/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-**LongMemEval v2 (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
 | Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
 |---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
@@ -100,13 +98,13 @@ Tested with svd_rank=160, chunk_size=8, topk_chunks=256, and outlier_ratio=0.003
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On LongMemEval v2 (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ShadowKV achieves **96/150 (64.0%)** vs. baseline **99/150 (66.0%)**, with **3** quality regressions and mean KV retention ratio **1.00**.
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ShadowKV achieves **96/150 (64.0%)** vs. baseline **99/150 (66.0%)**, with **3** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Low PG-19 logit drift (mean KL = **5.32**, Top-1 = **61.4%**).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
-- Preserves strong LongMemEval v2 semantic accuracy (**96/150 = 64.0%** vs. 99/150 = 66.0% baseline; **3** quality regressions).
+- Preserves strong LongMemEval semantic accuracy (**96/150 = 64.0%** vs. 99/150 = 66.0% baseline; **3** quality regressions).
 
 ### Cons
 
