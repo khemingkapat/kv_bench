@@ -339,6 +339,7 @@ def plot_hardware_sweep(tech: dict, hw_res: list[dict], base_hw: list[dict], out
     ax1.set_xscale("log", base=2)
     ax1.set_xticks(ctxs)
     ax1.set_xticklabels([str(c) for c in ctxs], rotation=30)
+    ax1.set_ylim(0, 17500)
     ax1.set_title(f"{tech['name']} — Peak VRAM vs. Context")
     ax1.set_xlabel("Context Length (tokens)")
     ax1.set_ylabel("Peak Allocated VRAM (MB)")
@@ -369,6 +370,7 @@ def plot_hardware_sweep(tech: dict, hw_res: list[dict], base_hw: list[dict], out
 
 
 def plot_kl_fidelity(tech: dict, pg_kl: tuple, lm_kl: tuple, out_path: Path) -> None:
+    """Plot PG-19 context-scaling KL divergence and Top-1 agreement with consistent 0-anchored axes."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.0), dpi=150)
 
     if pg_kl[0]:
@@ -378,41 +380,20 @@ def plot_kl_fidelity(tech: dict, pg_kl: tuple, lm_kl: tuple, out_path: Path) -> 
             ax1.plot(ctxs, kp99, "s--", color="#d62728", linewidth=1.3, label="PG-19 KL P99")
         ax2.plot(ctxs, t1, "o-", color="#2ca02c", linewidth=2, label="PG-19 Top-1 (%)")
 
-    if lm_kl[0]:
-        ctxs, km, _, t1 = lm_kl
-        if len(ctxs) == 1:
-            ax1.axhline(
-                km[0],
-                color="#1f77b4",
-                linestyle="-.",
-                linewidth=1.8,
-                label=f"LongMemEval Mean KL ({km[0]:.2f})",
-            )
-            ax2.axhline(
-                t1[0],
-                color="#ff7f0e",
-                linestyle="-.",
-                linewidth=1.8,
-                label=f"LongMemEval Top-1 ({t1[0]:.1f}%)",
-            )
-        else:
-            ax1.plot(ctxs, km, "^-", color="#1f77b4", linewidth=1.8, label="LongMemEval KL Mean")
-            ax2.plot(ctxs, t1, "^--", color="#ff7f0e", linewidth=1.8, label="LongMemEval Top-1 (%)")
-
-    all_ctxs = sorted(set(pg_kl[0]) | (set(lm_kl[0]) if len(lm_kl[0]) > 1 else set()))
     for ax in (ax1, ax2):
         ax.set_xscale("log", base=2)
-        if all_ctxs:
-            ax.set_xticks(all_ctxs)
-            ax.set_xticklabels([str(c) for c in all_ctxs], rotation=30)
+        if pg_kl[0]:
+            ax.set_xticks(pg_kl[0])
+            ax.set_xticklabels([str(c) for c in pg_kl[0]], rotation=30)
         ax.set_xlabel("Context Length (tokens)")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
 
-    ax1.set_title(f"{tech['name']} — KL Divergence (PG-19 Curve & LongMemEval Mean)")
+    ax1.set_ylim(0, 17)
+    ax1.set_title(f"{tech['name']} — PG-19 KL Divergence vs. Context")
     ax1.set_ylabel("KL Divergence")
-    ax2.set_ylim(-5, 105)
-    ax2.set_title(f"{tech['name']} — Top-1 Token Agreement")
+    ax2.set_ylim(0, 105)
+    ax2.set_title(f"{tech['name']} — PG-19 Top-1 Token Agreement")
     ax2.set_ylabel("Top-1 Agreement (%)")
 
     fig.tight_layout()
@@ -420,69 +401,119 @@ def plot_kl_fidelity(tech: dict, pg_kl: tuple, lm_kl: tuple, out_path: Path) -> 
     plt.close(fig)
 
 
-def plot_longmem_v2_diagnostics(tech: dict, judged: dict, base_judged: dict, out_path: Path) -> None:
-    """Plot LongMemEval v2 semantic accuracy vs. exact prompt_tokens bins + per-capability causal verdicts."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.3), dpi=150)
+def plot_longmem_v2_diagnostics(
+    tech: dict,
+    judged: dict,
+    base_judged: dict,
+    out_path: Path,
+    lm_res: list[dict] | None = None,
+) -> None:
+    """Plot 5-panel per-task LongMemEval diagnostics vs. exact prompt_tokens (zero binning).
 
-    bins = [
-        ("0–2K", 0, 2000),
-        ("2–4K", 2000, 4000),
-        ("4–8K", 4000, 8000),
-        ("8–12K", 8000, 12000),
-        ("12K+", 12000, 10**9),
-    ]
+    Left column (5 tasks): exact prompt_tokens dot/strip plot by causal outcome.
+    Right column (5 tasks): exact prompt_tokens vs. per-question KL divergence (0-17)
+    when `sample_fidelity` is present in the raw LongMemEval JSON.
+    """
     t_samples = judged.get("samples", [])
-    b_samples = base_judged.get("samples", [])
+    ex32 = next((r.get("extra", {}) for r in (lm_res or []) if r.get("requested_ctx") == 32768), {})
+    sample_fid = ex32.get("sample_fidelity") or {}
+    has_per_sample_kl = isinstance(sample_fid, dict) and any("kl_mean" in v for v in sample_fid.values())
 
-    labels, t_accs, b_accs = [], [], []
-    for lbl, lo, hi in bins:
-        t_sub = [s for s in t_samples if lo <= s.get("prompt_tokens", 0) < hi]
-        b_sub = [s for s in b_samples if lo <= s.get("prompt_tokens", 0) < hi]
-        if not t_sub:
-            continue
-        labels.append(f"{lbl}\n(n={len(t_sub)})")
-        t_accs.append(sum(1 for s in t_sub if s["correct"]) / len(t_sub) * 100.0)
-        b_accs.append(sum(1 for s in b_sub if s["correct"]) / len(b_sub) * 100.0 if b_sub else 0.0)
+    ncols = 2 if has_per_sample_kl else 1
+    fig, axes = plt.subplots(
+        len(CAPABILITIES),
+        ncols,
+        figsize=(12.5 if has_per_sample_kl else 7.8, 10.5),
+        dpi=150,
+        sharex=True,
+        squeeze=False,
+    )
 
-    x = np.arange(len(labels))
-    w = 0.36
-    ax1.bar(x - w / 2, b_accs, w, label="Baseline (FP16)", color="#7f7f7f", alpha=0.85)
-    ax1.bar(x + w / 2, t_accs, w, label=tech["name"], color="#1f77b4")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, fontsize=8.5)
-    ax1.set_ylim(0, 108)
-    ax1.set_title(f"{tech['name']} — Semantic Accuracy vs. Prompt Length (150q)")
-    ax1.set_xlabel("Exact Prompt Token Length")
-    ax1.set_ylabel("Semantic Accuracy (%)")
-    ax1.grid(True, axis="y", alpha=0.3)
-    ax1.legend(fontsize=8)
+    verdict_spec = [
+        ("PASS_FIDELITY_MAINTAINED", "Pass (Maintained)", "#5cb85c", 3),
+        ("UNEXPECTED_GAIN", "Unexpected Gain", "#17becf", 2),
+        ("QUALITY_REGRESSION", "Quality Regression", "#d9534f", 1),
+        ("BASELINE_LIMITATION", "Baseline Limitation", "#f0ad4e", 0),
+    ]
+    verdict_color = {k: col for k, _, col, _ in verdict_spec}
+    cap_titles = {
+        "fact_recall": "Fact Recall",
+        "cross_session_reasoning": "Cross-Session Reasoning",
+        "information_update": "Information Update",
+        "relative_timeframe": "Relative Timeframe",
+        "unanswerable_refusal": "Unanswerable Refusal",
+    }
 
-    cap_short = ["Fact", "Cross", "Update", "Time", "Unans"]
-    pfm, qr, bl, ug = [], [], [], []
-    for cap in CAPABILITIES:
+    max_tok = max((s.get("prompt_tokens", 0) for s in t_samples), default=22500)
+    xlim_hi = max(23500, int(max_tok * 1.05))
+
+    for row_idx, cap in enumerate(CAPABILITIES):
         c_sub = [s for s in t_samples if s.get("task_type") == cap]
-        pfm.append(sum(1 for s in c_sub if s.get("causal_verdict") == "PASS_FIDELITY_MAINTAINED"))
-        qr.append(sum(1 for s in c_sub if s.get("causal_verdict") == "QUALITY_REGRESSION"))
-        bl.append(sum(1 for s in c_sub if s.get("causal_verdict") == "BASELINE_LIMITATION"))
-        ug.append(sum(1 for s in c_sub if s.get("causal_verdict") == "UNEXPECTED_GAIN"))
+        c_pass = sum(1 for s in c_sub if s.get("correct"))
+        c_reg = sum(1 for s in c_sub if s.get("causal_verdict") == "QUALITY_REGRESSION")
+        ax_l = axes[row_idx, 0]
 
-    xc = np.arange(len(cap_short))
-    pfm_a, qr_a, bl_a, ug_a = np.array(pfm), np.array(qr), np.array(bl), np.array(ug)
-    ax2.bar(xc, pfm_a, label="Pass (Maintained)", color="#5cb85c")
-    ax2.bar(xc, ug_a, bottom=pfm_a, label="Unexpected Gain", color="#17becf")
-    ax2.bar(xc, qr_a, bottom=pfm_a + ug_a, label="Quality Regression", color="#d9534f")
-    ax2.bar(xc, bl_a, bottom=pfm_a + ug_a + qr_a, label="Baseline Limitation", color="#f0ad4e")
-    ax2.set_xticks(xc)
-    ax2.set_xticklabels(cap_short, fontsize=8.5)
-    ax2.set_ylim(0, 34)
-    ax2.set_title(f"{tech['name']} — Semantic Causal Attribution (30q / Task)")
-    ax2.set_xlabel("LongMemEval Capability")
-    ax2.set_ylabel("Question Count")
-    ax2.grid(True, axis="y", alpha=0.3)
-    ax2.legend(fontsize=7.5, loc="upper right")
+        for v_key, v_lbl, v_col, y_pos in verdict_spec:
+            xs = [s["prompt_tokens"] for s in c_sub if s.get("causal_verdict") == v_key]
+            if xs:
+                ax_l.scatter(
+                    xs,
+                    [y_pos] * len(xs),
+                    color=v_col,
+                    s=36,
+                    alpha=0.85,
+                    edgecolors="black",
+                    linewidth=0.4,
+                    label=v_lbl if row_idx == 0 else None,
+                )
 
-    fig.tight_layout()
-    fig.savefig(out_path)
+        ax_l.set_yticks([0, 1, 2, 3])
+        ax_l.set_yticklabels(["BaseLim", "Regress", "Gain", "Pass"], fontsize=7.5)
+        ax_l.set_ylim(-0.6, 3.6)
+        ax_l.set_xlim(0, xlim_hi)
+        ax_l.set_title(f"{cap_titles.get(cap, cap)} — {c_pass}/{len(c_sub)} pass, {c_reg} regressions", fontsize=9)
+        ax_l.grid(True, axis="x", alpha=0.3)
+
+        if has_per_sample_kl:
+            ax_r = axes[row_idx, 1]
+            for v_key, v_lbl, v_col, _ in verdict_spec:
+                pts = [
+                    (s["prompt_tokens"], sample_fid[s["id"]]["kl_mean"])
+                    for s in c_sub
+                    if s.get("causal_verdict") == v_key and s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]
+                ]
+                if pts:
+                    ax_r.scatter(
+                        [p[0] for p in pts],
+                        [p[1] for p in pts],
+                        color=v_col,
+                        s=34,
+                        alpha=0.85,
+                        edgecolors="black",
+                        linewidth=0.4,
+                    )
+            c_kls = [sample_fid[s["id"]]["kl_mean"] for s in c_sub if s["id"] in sample_fid and "kl_mean" in sample_fid[s["id"]]]
+            mean_c_kl = float(np.mean(c_kls)) if c_kls else 0.0
+            ax_r.set_ylim(0, 17)
+            ax_r.set_xlim(0, xlim_hi)
+            ax_r.set_ylabel("KL", fontsize=8)
+            ax_r.set_title(f"{cap_titles.get(cap, cap)} — Per-Question KL (mean={mean_c_kl:.2f})", fontsize=9)
+            ax_r.grid(True, alpha=0.3)
+
+    axes[-1, 0].set_xlabel("Exact Prompt Token Length")
+    if has_per_sample_kl:
+        axes[-1, 1].set_xlabel("Exact Prompt Token Length")
+
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=v_col, markeredgecolor="black", markeredgewidth=0.5, markersize=7, label=v_lbl)
+        for _, v_lbl, v_col, _ in verdict_spec
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=4, fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, 0.995))
+    fig.suptitle(f"{tech['name']} — LongMemEval Per-Task Diagnostics vs. Exact Prompt Length", fontsize=11, y=1.015)
+    fig.tight_layout(rect=[0, 0, 1, 0.965])
+    fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -691,7 +722,7 @@ def write_technique_profile(
     if pg_kl[0] or lm_kl[0]:
         plot_kl_fidelity(tech, pg_kl, lm_kl, fig_dir / "kl_fidelity.png")
     if judged and base_judged:
-        plot_longmem_v2_diagnostics(tech, judged, base_judged, fig_dir / "longmem_diagnostics.png")
+        plot_longmem_v2_diagnostics(tech, judged, base_judged, fig_dir / "longmem_diagnostics.png", lm_res=lm_res)
     elif lm_res:
         plot_longmem_diagnostics(tech, lm_res, base_lm, fig_dir / "longmem_diagnostics.png")
 
@@ -1092,11 +1123,10 @@ def write_executive_report(
     note_block = (
         [
             "> [!NOTE]",
-            "> **LongMemEval Evaluation Protocol:** All 9 working techniques + Baseline were evaluated under the canonical "
+            "> **LongMemEval Evaluation Protocol:** All 11 reproduced techniques + Baseline were evaluated under the canonical "
             "LongMemEval harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability "
             "including all 30 official `_abs` unanswerables, Qwen chat template, `max_tokens=128` + multi-EOS stopping, per-sample KL alignment, "
-            "and decoupled offline semantic grading). `HeadQ` (`0/99*`) and `EpiCache` (`10/99*`) suffered catastrophic collapse (`0%` NIAH) "
-            "in initial screening and retain their screening collapse counts.",
+            "and decoupled offline semantic grading).",
         ]
         if use_v2
         else [

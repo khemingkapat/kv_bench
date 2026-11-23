@@ -5,7 +5,7 @@
 This executive report synthesizes empirical results across all 11 reproduced KV-cache optimization candidates. Note on theoretical vs. empirical VRAM: because unmodified FP16 model weights and runtime buffers occupy ~7.5 GiB fixed VRAM, a 4× KV-cache reduction translates to ~18–35% total process VRAM savings at 32K context. Fine-grained tables, per-capability breakdowns, and `matplotlib` figures live in [`docs/wp3_profiles/`](wp3_profiles/).
 
 > [!NOTE]
-> **LongMemEval Evaluation Protocol:** All 9 working techniques + Baseline were evaluated under the canonical LongMemEval harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability including all 30 official `_abs` unanswerables, Qwen chat template, `max_tokens=128` + multi-EOS stopping, per-sample KL alignment, and decoupled offline semantic grading). `HeadQ` (`0/99*`) and `EpiCache` (`10/99*`) suffered catastrophic collapse (`0%` NIAH) in initial screening and retain their screening collapse counts.
+> **LongMemEval Evaluation Protocol:** All 11 reproduced techniques + Baseline were evaluated under the canonical LongMemEval harness (`ctx=32768` single-pass native length, **150** quantile-sampled official questions = 30/capability including all 30 official `_abs` unanswerables, Qwen chat template, `max_tokens=128` + multi-EOS stopping, per-sample KL alignment, and decoupled offline semantic grading).
 
 ---
 
@@ -17,14 +17,14 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 | WP3-1 | **StreamingLLM** | `STRUCTURAL` | 8712 | 20.9 | 1326 | 8266 | 6.88 | 12.98 | 100% / 40% | 66/150 (44.0%) | 37 | [Profile](wp3_profiles/streamingllm.md) |
 | WP3-2 | **H2O (Heavy-Hitter Oracle)** | `STRUCTURAL` | 9725 | 45.9 | 6874 | 2005976 | 6.55 | 7.65 | 100% / 20% | 80/150 (53.3%) | 22 | [Profile](wp3_profiles/h2o.md) |
 | WP3-3 | **TurboQuant** | `STRUCTURAL` | 10294 | 864.1 | 7529 | 13265 | 11.89 | 11.29 | 100% / 100% | 80/150 (53.3%) | 20 | [Profile](wp3_profiles/turboquant.md) |
-| WP3-4 | **HeadQ** | `STRUCTURAL` | 10109 | 80.9 | 4656 | 8289 | 13.52 | 14.84 | 0% / 0% | 0/99* *(collapse)* | 25 | [Profile](wp3_profiles/headq.md) |
+| WP3-4 | **HeadQ** | `STRUCTURAL` | 10109 | 80.9 | 4656 | 8289 | 13.52 | 14.76 | 0% / 0% | 0/150 (0.0%) | 99 | [Profile](wp3_profiles/headq.md) |
 | WP3-5 | **QServe KV4** | `STRUCTURAL` | 10763 | 59.9 | 3629 | 8266 | 10.25 | 7.89 | 100% / 100% | 89/150 (59.3%) | 13 | [Profile](wp3_profiles/qserve_kv4.md) |
 | WP3-6 | **FlexGen-KV** | `SPATIAL` | 8889 | 229.6 | 6565 | 1646964418 | 10.80 | 10.25 | 100% / 100% | 91/150 (60.7%) | 14 | [Profile](wp3_profiles/flexgen_kv.md) |
 | WP3-7 | **ShadowKV** | `SPATIAL` | 14233 | 85.3 | 5325 | 67241955 | 5.32 | 4.58 | 100% / 100% | 96/150 (64.0%) | 3 | [Profile](wp3_profiles/shadowkv.md) |
 | WP3-8 | **CacheGen** | `STRUCTURAL` | 10600 | 82.9 | 4536 | 935016151 | 12.87 | 12.71 | 40% / 80% | 66/150 (44.0%) | 36 | [Profile](wp3_profiles/cachegen.md) |
 | WP3-9 | **InfiniGen** | `SPATIAL` | 13910 | 219.7 | 20491 | 1829885205 | 11.64 | 7.35 | 100% / 100% | 91/150 (60.7%) | 13 | [Profile](wp3_profiles/infinigen.md) |
 | WP3-10 | **ArkVale** | `STRUCTURAL` | 9033 | 102.9 | 16614 | 1618383854 | 11.42 | 8.99 | 100% / 100% | 89/150 (59.3%) | 14 | [Profile](wp3_profiles/arkvale.md) |
-| WP3-11 | **EpiCache** | `STRUCTURAL` | 8567 | 30.6 | 2846 | 442264 | 9.86 | 9.00 | 0% / 0% | 10/99* *(collapse)* | 17 | [Profile](wp3_profiles/epicache.md) |
+| WP3-11 | **EpiCache** | `STRUCTURAL` | 8567 | 30.6 | 2846 | 442264 | 9.86 | 13.51 | 0% / 0% | 8/150 (5.3%) | 91 | [Profile](wp3_profiles/epicache.md) |
 
 ---
 
@@ -48,7 +48,7 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 ### WP3-4: HeadQ (`STRUCTURAL`) — [Full Profile](wp3_profiles/headq.md)
 - **Mechanism:** HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits, augmenting the quantized Keys with a low-rank PCA residual side-code to recover high-variance attention directions.
 - **Prominent Upside:** **23.6% lower 32K VRAM** (10109 MB)
-- **Primary Trade-Off:** 32K decode TPOT is **2.77× slower** (80.9 ms/tok); NIAH drops to **0% @2K / 0% @4K**; LongMemEval collapse (**0/99* **, excluded from full 150q sweep); high PG-19 KL (**13.52**)
+- **Primary Trade-Off:** 32K decode TPOT is **2.77× slower** (80.9 ms/tok); NIAH drops to **0% @2K / 0% @4K**; LongMemEval drops to **0/150 (0.0%)** (99 regressions); high PG-19 KL (**13.52**)
 
 ### WP3-5: QServe KV4 (`STRUCTURAL`) — [Full Profile](wp3_profiles/qserve_kv4.md)
 - **Mechanism:** QServe KV4 performs group-wise 4-bit symmetric/asymmetric KV-cache quantization paired with SmoothAttention, which migrates channel-wise outlier magnitudes from Keys into the Query projection scaling before quantizing.
@@ -83,7 +83,7 @@ This executive report synthesizes empirical results across all 11 reproduced KV-
 ### WP3-11: EpiCache (`STRUCTURAL`) — [Full Profile](wp3_profiles/epicache.md)
 - **Mechanism:** EpiCache clusters conversational/context history into episodic segments and allocates per-layer KV budgets according to layer sensitivity, pruning low-sensitivity tokens within each episode to fit a compact GPU budget.
 - **Prominent Upside:** **35.2% lower 32K VRAM** (8567 MB); **30.6 ms/tok** decode TPOT (0.95× baseline speed)
-- **Primary Trade-Off:** NIAH drops to **0% @2K / 0% @4K**; LongMemEval collapse (**10/99* **, excluded from full 150q sweep)
+- **Primary Trade-Off:** NIAH drops to **0% @2K / 0% @4K**; LongMemEval drops to **8/150 (5.3%)** (91 regressions)
 
 ---
 

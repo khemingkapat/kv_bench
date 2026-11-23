@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `VERIFIED` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`bbfd97bf6053…`) | `turboquant_niah_pytorch_16gb.json`: `VERIFIED` (`08562dd7526b…`)
+**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `VERIFIED` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`5a4056574b27…`) | `turboquant_niah_pytorch_16gb.json`: `VERIFIED` (`08562dd7526b…`)
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `VERIFIED` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`85ee51799ebd…`) | `qserve_kv4_niah_pytorch_16gb.json`: `VERIFIED` (`6400f386d866…`)
+**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `VERIFIED` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6bad0eefc97a…`) | `qserve_kv4_niah_pytorch_16gb.json`: `VERIFIED` (`6400f386d866…`)
 
 ---
 

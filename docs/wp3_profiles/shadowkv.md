@@ -2,7 +2,7 @@
 
 **Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, STRUCTURAL, TEMPORAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `shadowkv_hardware_pytorch_16gb.json`: `VERIFIED` (`6a7bbf2b1eae…`) | `shadowkv_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`80c0dda758d4…`) | `shadowkv_niah_pytorch_16gb.json`: `VERIFIED` (`fa78e110f6c6…`)
+**Artifact Provenance (SHA-256):** `shadowkv_hardware_pytorch_16gb.json`: `VERIFIED` (`6a7bbf2b1eae…`) | `shadowkv_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`ba3dfaab100b…`) | `shadowkv_niah_pytorch_16gb.json`: `VERIFIED` (`fa78e110f6c6…`)
 
 ---
 

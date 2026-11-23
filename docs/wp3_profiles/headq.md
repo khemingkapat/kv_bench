@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `headq_hardware_pytorch_16gb.json`: `VERIFIED` (`8dc8e382da4d…`) | `headq_longmem_pytorch_16gb.json`: `VERIFIED` (`7f8276616601…`) | `headq_niah_pytorch_16gb.json`: `VERIFIED` (`33c8f7aead57…`)
+**Artifact Provenance (SHA-256):** `headq_hardware_pytorch_16gb.json`: `VERIFIED` (`8dc8e382da4d…`) | `headq_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`fff4d8c40b66…`) | `headq_niah_pytorch_16gb.json`: `VERIFIED` (`33c8f7aead57…`)
 
 ---
 
@@ -48,12 +48,7 @@ HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 14.8342 | 15.4249 | 1.25 |
-| 1024 | 14.9696 | 15.4249 | 0.63 |
-| 2048 | 14.9161 | 15.4249 | 0.00 |
-| 4096 | 14.9336 | 15.4249 | 0.00 |
-| 8192 | 14.5238 | 15.4249 | 1.08 |
-| 16384 | 14.8696 | 15.4249 | 0.42 |
+| 32768 | 14.7555 | 15.4249 | 1.36 |
 
 ![HeadQ KL Fidelity](../figures/wp3/headq/kl_fidelity.png)
 
@@ -75,24 +70,21 @@ HeadQ compresses Keys aggressively down to 2 bits while storing Values at 4 bits
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.00 | 0.01 | 0/10 | 2 | 8 | 1.00 | 3.25 |
-| 1024 | 0.00 | 0.00 | 0/10 | 3 | 7 | 1.00 | 3.25 |
-| 2048 | 0.00 | 0.00 | 0/20 | 5 | 15 | 1.00 | 3.25 |
-| 4096 | 0.00 | 0.00 | 0/18 | 7 | 11 | 1.00 | 3.25 |
-| 8192 | 0.00 | 0.01 | 0/26 | 5 | 21 | 1.00 | 3.25 |
-| 16384 | 0.00 | 0.00 | 0/15 | 3 | 12 | 1.00 | 3.25 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Legacy WP-3 Substring Evaluation)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **0.0%** | **0/150** | 99 | 51 | 0 | 0/150 | 1.00 | 3.25 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 0.0% | 50.0% | -50.0% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 0.0% | 45.0% | -45.0% |
-| `relative_timeframe` | 19 | 0.0% | 21.1% | -21.1% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 0.0% | 90.0% | -90.0% |
+| `cross_session_reasoning` | 30 | 0.0% | 43.3% | -43.3% |
+| `information_update` | 30 | 0.0% | 66.7% | -66.7% |
+| `relative_timeframe` | 30 | 0.0% | 30.0% | -30.0% |
+| `unanswerable_refusal` | 30 | 0.0% | 100.0% | -100.0% |
 
 ![HeadQ LongMemEval Diagnostics](../figures/wp3/headq/longmem_diagnostics.png)
 
@@ -106,7 +98,7 @@ Tested with key_bits=2, val_bits=4, pca_rank=4, and sidecode_bits=4. At 2-bit ke
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 0%, 4096: 0%**.
 
-On the prior LongMemEval screening sweep (99 substring evaluations), HeadQ recorded **0/99** (**25** regressions; mean retention ratio = **1.00**). *Excluded from the full 150-question LongMemEval sweep due to catastrophic implementation collapse (0% NIAH).*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), HeadQ achieves **0/150 (0.0%)** vs. baseline **99/150 (66.0%)**, with **99** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
@@ -117,4 +109,4 @@ On the prior LongMemEval screening sweep (99 substring evaluations), HeadQ recor
 - Decode latency at 32K is **2.77x slower** than baseline (**80.9 ms/tok** vs. 29.2 ms/tok).
 - Elevated PG-19 logit divergence (mean KL = **13.52**, Top-1 = **2.0%**).
 - NIAH retrieval drops to **0%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`), confirming loss of early/non-local needle tokens.
-- Severe LongMemEval collapse (**0/99** vs. 25/99 prior baseline; **25** quality regressions, excluded from full 150-question sweep).
+- Degrades LongMemEval semantic accuracy to **0/150 (0.0%)** vs. 99/150 (66.0%) baseline (**99** quality regressions).

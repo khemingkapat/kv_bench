@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL, SPATIAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `arkvale_hardware_pytorch_16gb.json`: `VERIFIED` (`ba4c2ed121e1…`) | `arkvale_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`5bbd4fc9fce2…`) | `arkvale_niah_pytorch_16gb.json`: `VERIFIED` (`cc37c564cb5b…`)
+**Artifact Provenance (SHA-256):** `arkvale_hardware_pytorch_16gb.json`: `VERIFIED` (`ba4c2ed121e1…`) | `arkvale_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`68fd866b3dee…`) | `arkvale_niah_pytorch_16gb.json`: `VERIFIED` (`cc37c564cb5b…`)
 
 ---
 

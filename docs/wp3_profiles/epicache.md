@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL, SPATIAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `epicache_hardware_pytorch_16gb.json`: `VERIFIED` (`f2e7550025d3…`) | `epicache_longmem_pytorch_16gb.json`: `VERIFIED` (`0b7b5b00cd9d…`) | `epicache_niah_pytorch_16gb.json`: `VERIFIED` (`fc945c375ed7…`)
+**Artifact Provenance (SHA-256):** `epicache_hardware_pytorch_16gb.json`: `VERIFIED` (`f2e7550025d3…`) | `epicache_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`b3b319b85f68…`) | `epicache_niah_pytorch_16gb.json`: `VERIFIED` (`fc945c375ed7…`)
 
 ---
 
@@ -48,12 +48,7 @@ EpiCache clusters conversational/context history into episodic segments and allo
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 0.0000 | 0.0000 | 100.00 |
-| 1024 | 0.0000 | 0.0000 | 100.00 |
-| 2048 | 12.9167 | 15.4249 | 8.59 |
-| 4096 | 13.4255 | 15.4249 | 4.69 |
-| 8192 | 13.7235 | 15.4249 | 4.21 |
-| 16384 | 13.9244 | 15.4249 | 3.12 |
+| 32768 | 13.5135 | 15.4249 | 6.24 |
 
 ![EpiCache KL Fidelity](../figures/wp3/epicache/kl_fidelity.png)
 
@@ -75,24 +70,21 @@ EpiCache clusters conversational/context history into episodic segments and allo
 
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.12 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.13 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.15 | 0.11 | 3/20 | 3 | 14 | 0.60 | 9.63 |
-| 4096 | 0.06 | 0.04 | 1/18 | 6 | 11 | 0.30 | 4.83 |
-| 8192 | 0.04 | 0.02 | 1/26 | 5 | 20 | 0.15 | 2.42 |
-| 16384 | 0.00 | 0.03 | 0/15 | 3 | 12 | 0.08 | 1.21 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Legacy WP-3 Substring Evaluation)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **5.3%** | **8/150** | 91 | 51 | 0 | 8/150 | 0.24 | 3.89 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 31.8% | 50.0% | -18.2% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 10.0% | 45.0% | -35.0% |
-| `relative_timeframe` | 19 | 0.0% | 21.1% | -21.1% |
-| `unanswerable_refusal` | 22 | 4.5% | 0.0% | +4.5% |
+| `fact_recall` | 30 | 26.7% | 90.0% | -63.3% |
+| `cross_session_reasoning` | 30 | 0.0% | 43.3% | -43.3% |
+| `information_update` | 30 | 0.0% | 66.7% | -66.7% |
+| `relative_timeframe` | 30 | 0.0% | 30.0% | -30.0% |
+| `unanswerable_refusal` | 30 | 0.0% | 100.0% | -100.0% |
 
 ![EpiCache LongMemEval Diagnostics](../figures/wp3/epicache/longmem_diagnostics.png)
 
@@ -106,7 +98,7 @@ Tested with num_episodes=4, episode_budget_tokens=1,024, and layer_sensitivity_a
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 0%, 4096: 0%**.
 
-On the prior LongMemEval screening sweep (99 substring evaluations), EpiCache recorded **10/99** (**17** regressions; mean retention ratio = **0.52**). *Excluded from the full 150-question LongMemEval sweep due to catastrophic implementation collapse (0% NIAH).*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), EpiCache achieves **8/150 (5.3%)** vs. baseline **99/150 (66.0%)**, with **91** quality regressions and mean KV retention ratio **0.24**.
 
 ### Pros
 
@@ -118,4 +110,4 @@ On the prior LongMemEval screening sweep (99 substring evaluations), EpiCache re
 - High host-device transfer volume at 32K (**442264 B/tok**, Host RSS Δ = **2846 MB**).
 - Elevated PG-19 logit divergence (mean KL = **9.86**, Top-1 = **22.5%**).
 - NIAH retrieval drops to **0%** at 4,096 tokens (failing at depths `[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`), confirming loss of early/non-local needle tokens.
-- Severe LongMemEval collapse (**10/99** vs. 25/99 prior baseline; **17** quality regressions, excluded from full 150-question sweep).
+- Degrades LongMemEval semantic accuracy to **8/150 (5.3%)** vs. 99/150 (66.0%) baseline (**91** quality regressions).

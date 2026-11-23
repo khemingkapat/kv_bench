@@ -73,6 +73,8 @@
       "arkvale",
       "infinigen",
       "cachegen",
+      "headq",
+      "epicache",
       "turboquant"
     ],
     "skip_hardware_sweeps": true,
