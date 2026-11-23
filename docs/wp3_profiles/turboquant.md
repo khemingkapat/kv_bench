@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `VERIFIED` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `VERIFIED` (`df8c8f98d862…`) | `turboquant_niah_pytorch_16gb.json`: `VERIFIED` (`08562dd7526b…`)
+**Artifact Provenance (SHA-256):** `turboquant_hardware_pytorch_16gb.json`: `VERIFIED` (`6dfdb5bbd319…`) | `turboquant_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`5a4056574b27…`) | `turboquant_niah_pytorch_16gb.json`: `VERIFIED` (`08562dd7526b…`)
 
 ---
 
@@ -48,12 +48,7 @@ TurboQuant applies asymmetric low-bit quantization to Keys and Values, using a W
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 7.7213 | 15.4249 | 45.00 |
-| 1024 | 7.2420 | 15.4249 | 48.75 |
-| 2048 | 9.4998 | 15.4249 | 32.81 |
-| 4096 | 11.3518 | 15.4249 | 20.14 |
-| 8192 | 11.4929 | 15.4249 | 19.71 |
-| 16384 | 9.5310 | 15.4249 | 32.29 |
+| 32768 | 11.2884 | 15.4249 | 22.60 |
 
 ![TurboQuant KL Fidelity](../figures/wp3/turboquant/kl_fidelity.png)
 
@@ -73,28 +68,23 @@ TurboQuant applies asymmetric low-bit quantization to Keys and Values, using a W
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![TurboQuant NIAH Heatmap](../figures/wp3/turboquant/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.10 | 2/10 | 0 | 8 | 1.00 | 4.38 |
-| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 4.38 |
-| 2048 | 0.25 | 0.11 | 5/20 | 1 | 14 | 1.00 | 4.38 |
-| 4096 | 0.33 | 0.08 | 6/18 | 2 | 10 | 1.00 | 4.38 |
-| 8192 | 0.35 | 0.10 | 9/26 | 1 | 16 | 1.00 | 4.38 |
-| 16384 | 0.13 | 0.11 | 2/15 | 1 | 12 | 1.00 | 4.38 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **53.3%** | **80/150** | 20 | 50 | 1 | 142/150 | 1.00 | 4.38 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 45.5% | 50.0% | -4.5% |
-| `cross_session_reasoning` | 16 | 6.2% | 6.2% | +0.0% |
-| `information_update` | 20 | 60.0% | 45.0% | +15.0% |
-| `relative_timeframe` | 19 | 21.1% | 21.1% | -0.0% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 73.3% | 90.0% | -16.7% |
+| `cross_session_reasoning` | 30 | 23.3% | 43.3% | -20.0% |
+| `information_update` | 30 | 53.3% | 66.7% | -13.3% |
+| `relative_timeframe` | 30 | 20.0% | 30.0% | -10.0% |
+| `unanswerable_refusal` | 30 | 96.7% | 100.0% | -3.3% |
 
 ![TurboQuant LongMemEval Diagnostics](../figures/wp3/turboquant/longmem_diagnostics.png)
 
@@ -108,7 +98,7 @@ Tested at 4-bit Keys and 3-bit Values (qjl_v=True, qjl_k=False, ~3.66x theoretic
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), TurboQuant records **27/99** (**5** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), TurboQuant achieves **80/150 (53.3%)** vs. baseline **99/150 (66.0%)**, with **20** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
@@ -120,3 +110,4 @@ On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), T
 - Decode latency at 32K is **29.62x slower** than baseline (**864.1 ms/tok** vs. 29.2 ms/tok).
 - High host-device transfer volume at 32K (**13265 B/tok**, Host RSS Δ = **7529 MB**).
 - Elevated PG-19 logit divergence (mean KL = **11.89**, Top-1 = **14.5%**).
+- Degrades LongMemEval semantic accuracy to **80/150 (53.3%)** vs. 99/150 (66.0%) baseline (**20** quality regressions).

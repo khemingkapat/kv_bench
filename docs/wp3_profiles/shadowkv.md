@@ -2,7 +2,7 @@
 
 **Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, STRUCTURAL, TEMPORAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `shadowkv_hardware_pytorch_16gb.json`: `VERIFIED` (`6a7bbf2b1eae…`) | `shadowkv_longmem_pytorch_16gb.json`: `VERIFIED` (`a9d68344f853…`) | `shadowkv_niah_pytorch_16gb.json`: `VERIFIED` (`fa78e110f6c6…`)
+**Artifact Provenance (SHA-256):** `shadowkv_hardware_pytorch_16gb.json`: `VERIFIED` (`6a7bbf2b1eae…`) | `shadowkv_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`ba3dfaab100b…`) | `shadowkv_niah_pytorch_16gb.json`: `VERIFIED` (`fa78e110f6c6…`)
 
 ---
 
@@ -48,12 +48,7 @@ ShadowKV keeps low-rank SVD-compressed Key representations and sparse outlier ch
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 0.0000 | 0.0000 | 100.00 |
-| 1024 | 0.0000 | 0.0000 | 100.00 |
-| 2048 | 6.2979 | 15.4249 | 54.37 |
-| 4096 | 6.8981 | 15.4249 | 49.65 |
-| 8192 | 5.0667 | 15.4249 | 62.74 |
-| 16384 | 4.8172 | 15.4249 | 64.17 |
+| 32768 | 4.5841 | 15.4249 | 67.90 |
 
 ![ShadowKV KL Fidelity](../figures/wp3/shadowkv/kl_fidelity.png)
 
@@ -73,28 +68,23 @@ ShadowKV keeps low-rank SVD-compressed Key representations and sparse outlier ch
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![ShadowKV NIAH Heatmap](../figures/wp3/shadowkv/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.12 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.13 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.20 | 0.11 | 4/20 | 1 | 15 | 1.00 | 16.00 |
-| 4096 | 0.28 | 0.07 | 5/18 | 2 | 11 | 1.00 | 16.00 |
-| 8192 | 0.19 | 0.07 | 5/26 | 0 | 21 | 1.00 | 16.00 |
-| 16384 | 0.20 | 0.10 | 3/15 | 0 | 12 | 1.00 | 16.00 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **64.0%** | **96/150** | 3 | 51 | 0 | 142/150 | 1.00 | 16.00 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 40.9% | 50.0% | -9.1% |
-| `cross_session_reasoning` | 16 | 6.2% | 6.2% | +0.0% |
-| `information_update` | 20 | 45.0% | 45.0% | +0.0% |
-| `relative_timeframe` | 19 | 15.8% | 21.1% | -5.3% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 90.0% | 90.0% | +0.0% |
+| `cross_session_reasoning` | 30 | 33.3% | 43.3% | -10.0% |
+| `information_update` | 30 | 66.7% | 66.7% | +0.0% |
+| `relative_timeframe` | 30 | 30.0% | 30.0% | +0.0% |
+| `unanswerable_refusal` | 30 | 100.0% | 100.0% | +0.0% |
 
 ![ShadowKV LongMemEval Diagnostics](../figures/wp3/shadowkv/longmem_diagnostics.png)
 
@@ -108,12 +98,13 @@ Tested with svd_rank=160, chunk_size=8, topk_chunks=256, and outlier_ratio=0.003
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), ShadowKV records **22/99** (**3** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), ShadowKV achieves **96/150 (64.0%)** vs. baseline **99/150 (66.0%)**, with **3** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Low PG-19 logit drift (mean KL = **5.32**, Top-1 = **61.4%**).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
+- Preserves strong LongMemEval semantic accuracy (**96/150 = 64.0%** vs. 99/150 = 66.0% baseline; **3** quality regressions).
 
 ### Cons
 

@@ -2,7 +2,7 @@
 
 **Primary Axis:** `SPATIAL` | **All Axes:** `SPATIAL, STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `flexgen_kv_hardware_pytorch_16gb.json`: `VERIFIED` (`bd79f1dd9965…`) | `flexgen_kv_longmem_pytorch_16gb.json`: `VERIFIED` (`6861240031c7…`) | `flexgen_kv_niah_pytorch_16gb.json`: `VERIFIED` (`6ff0ae38d44b…`)
+**Artifact Provenance (SHA-256):** `flexgen_kv_hardware_pytorch_16gb.json`: `VERIFIED` (`bd79f1dd9965…`) | `flexgen_kv_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`513a8a4e922c…`) | `flexgen_kv_niah_pytorch_16gb.json`: `VERIFIED` (`6ff0ae38d44b…`)
 
 ---
 
@@ -48,12 +48,7 @@ FlexGen-KV tiers the KV cache across GPU VRAM and host CPU RAM, keeping a bounde
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 0.0000 | 0.0000 | 100.00 |
-| 1024 | 0.0000 | 0.0000 | 100.00 |
-| 2048 | 7.4357 | 15.4249 | 46.25 |
-| 4096 | 10.8082 | 15.4249 | 23.44 |
-| 8192 | 11.7038 | 15.4249 | 18.15 |
-| 16384 | 14.1135 | 15.4249 | 3.12 |
+| 32768 | 10.2504 | 15.4249 | 29.99 |
 
 ![FlexGen-KV KL Fidelity](../figures/wp3/flexgen_kv/kl_fidelity.png)
 
@@ -73,28 +68,23 @@ FlexGen-KV tiers the KV cache across GPU VRAM and host CPU RAM, keeping a bounde
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![FlexGen-KV NIAH Heatmap](../figures/wp3/flexgen_kv/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.12 | 2/10 | 0 | 8 | 1.00 | 16.00 |
-| 1024 | 0.30 | 0.13 | 3/10 | 0 | 7 | 1.00 | 16.00 |
-| 2048 | 0.25 | 0.11 | 5/20 | 1 | 14 | 1.00 | 16.00 |
-| 4096 | 0.39 | 0.09 | 7/18 | 1 | 10 | 1.00 | 16.00 |
-| 8192 | 0.23 | 0.08 | 6/26 | 1 | 19 | 1.00 | 16.00 |
-| 16384 | 0.07 | 0.06 | 1/15 | 3 | 11 | 1.00 | 16.00 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **60.7%** | **91/150** | 14 | 45 | 6 | 146/150 | 1.00 | 16.00 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 50.0% | 50.0% | +0.0% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 40.0% | 45.0% | -5.0% |
-| `relative_timeframe` | 19 | 26.3% | 21.1% | +5.3% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 90.0% | 90.0% | +0.0% |
+| `cross_session_reasoning` | 30 | 30.0% | 43.3% | -13.3% |
+| `information_update` | 30 | 66.7% | 66.7% | +0.0% |
+| `relative_timeframe` | 30 | 26.7% | 30.0% | -3.3% |
+| `unanswerable_refusal` | 30 | 90.0% | 100.0% | -10.0% |
 
 ![FlexGen-KV LongMemEval Diagnostics](../figures/wp3/flexgen_kv/longmem_diagnostics.png)
 
@@ -108,12 +98,13 @@ Tested with gpu_cache_tokens=1,024, cpu_cache_tokens=32,768, group_size=64, and 
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), FlexGen-KV records **24/99** (**6** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), FlexGen-KV achieves **91/150 (60.7%)** vs. baseline **99/150 (66.0%)**, with **14** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **32.8%** (8889 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
+- Preserves strong LongMemEval semantic accuracy (**91/150 = 60.7%** vs. 99/150 = 66.0% baseline; **14** quality regressions).
 
 ### Cons
 

@@ -71,7 +71,33 @@ def parse_session_token_ranges(
 
     delimiter_spans: list[tuple[int, int]] = []
 
-    if tokenizer is not None:
+    # 1. Preferred: character-offset mapping (handles BPE merges like ']\n\n' -> single token)
+    if tokenizer is not None and prompt_text and callable(tokenizer):
+        char_matches: list[tuple[int, int]] = []
+        for pat in (r"\[Session Break\]", r"\[Chat History Continued\]"):
+            for m in re.finditer(pat, prompt_text):
+                char_matches.append((m.start(), m.end()))
+        if char_matches:
+            try:
+                enc = tokenizer(prompt_text, return_offsets_mapping=True, add_special_tokens=False)
+                offsets = enc.get("offset_mapping") if isinstance(enc, dict) else getattr(enc, "offset_mapping", None)
+                enc_ids = enc.get("input_ids") if isinstance(enc, dict) else getattr(enc, "input_ids", None)
+                if offsets and enc_ids:
+                    bos_shift = total_tokens - len(enc_ids)
+                    if bos_shift in (0, 1):
+                        for c_start, c_end in char_matches:
+                            tok_indices = [
+                                idx + bos_shift
+                                for idx, (t_s, t_e) in enumerate(offsets)
+                                if t_e > c_start and t_s < c_end
+                            ]
+                            if tok_indices:
+                                delimiter_spans.append((min(tok_indices), max(tok_indices) + 1))
+            except Exception:
+                pass
+
+    # 2. Fallback: raw delimiter token-sequence scanning (supports DummyTokenizer / synthetic tests)
+    if not delimiter_spans and tokenizer is not None and hasattr(tokenizer, "encode"):
         for delim_str in session_delimiter_patterns:
             delim_ids = tokenizer.encode(delim_str, add_special_tokens=False)
             if not delim_ids:

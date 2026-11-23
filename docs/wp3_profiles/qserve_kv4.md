@@ -2,7 +2,7 @@
 
 **Primary Axis:** `STRUCTURAL` | **All Axes:** `STRUCTURAL` | **Model:** `Qwen3-4B-Instruct-2507` (16.0 GiB Cap, PyTorch Native SDPA)
 
-**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `VERIFIED` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `VERIFIED` (`ea1f7f63e45d…`) | `qserve_kv4_niah_pytorch_16gb.json`: `VERIFIED` (`6400f386d866…`)
+**Artifact Provenance (SHA-256):** `qserve_kv4_hardware_pytorch_16gb.json`: `VERIFIED` (`8f1d2a35aa6e…`) | `qserve_kv4_longmem_pytorch_16gb.json`: `UPDATED (post-manifest re-run)` (`6bad0eefc97a…`) | `qserve_kv4_niah_pytorch_16gb.json`: `VERIFIED` (`6400f386d866…`)
 
 ---
 
@@ -48,12 +48,7 @@ QServe KV4 performs group-wise 4-bit symmetric/asymmetric KV-cache quantization 
 
 | Context Tier | KL Div Mean | KL Div P99 | Top-1 Agreement (%) |
 |---:|---:|---:|---:|
-| 512 | 4.1200 | 15.4249 | 69.69 |
-| 1024 | 5.4375 | 15.4249 | 60.62 |
-| 2048 | 8.3202 | 15.4249 | 40.16 |
-| 4096 | 7.6263 | 15.4249 | 47.22 |
-| 8192 | 8.8399 | 15.4249 | 36.78 |
-| 16384 | 10.0476 | 15.4249 | 28.96 |
+| 32768 | 7.8913 | 15.4249 | 45.54 |
 
 ![QServe KV4 KL Fidelity](../figures/wp3/qserve_kv4/kl_fidelity.png)
 
@@ -73,28 +68,23 @@ QServe KV4 performs group-wise 4-bit symmetric/asymmetric KV-cache quantization 
 | 0.9 | PASS | PASS |
 | **Overall Accuracy** | **100.0%** | **100.0%** |
 
-![QServe KV4 NIAH Heatmap](../figures/wp3/qserve_kv4/niah_heatmap.png)
-
 ### 2.4 LongMemEval & Post-Hoc Diagnostics
 
-| Context Tier | Acc | F1 | Pass / Total | Quality Regressions | Baseline Limitations | Mean Retention | Eff. Bitwidth |
-|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 512 | 0.20 | 0.13 | 2/10 | 0 | 8 | 1.00 | 4.50 |
-| 1024 | 0.30 | 0.12 | 3/10 | 0 | 7 | 1.00 | 4.50 |
-| 2048 | 0.25 | 0.12 | 5/20 | 1 | 14 | 1.00 | 4.50 |
-| 4096 | 0.39 | 0.10 | 7/18 | 0 | 11 | 1.00 | 4.50 |
-| 8192 | 0.31 | 0.08 | 8/26 | 0 | 18 | 1.00 | 4.50 |
-| 16384 | 0.20 | 0.09 | 3/15 | 1 | 11 | 1.00 | 4.50 |
+**LongMemEval (150 Quantile-Sampled Official Questions, Single-Pass Native Length @ 32K, Chat Template, `max_tokens=128`, Semantic Graded):**
 
-#### 5-Capability Accuracy Breakdown (Sample-Weighted Across Context Tiers)
+| Context Ceiling | Semantic Acc | Pass / Total | Quality Regressions | Baseline Limitations | Unexpected Gains | EOS Clean Stops | Mean Retention | Eff. Bitwidth |
+|---:|---:|:---:|---:|---:|---:|:---:|---:|---:|
+| 32768 | **59.3%** | **89/150** | 13 | 48 | 3 | 143/150 | 1.00 | 4.50 |
+
+#### 5-Capability Semantic Accuracy Breakdown (30 Official Questions / Capability)
 
 | Capability | Samples | Technique Acc | Baseline Acc | Δ vs. Baseline |
 |---|---:|---:|---:|---:|
-| `fact_recall` | 22 | 50.0% | 50.0% | +0.0% |
-| `cross_session_reasoning` | 16 | 0.0% | 6.2% | -6.2% |
-| `information_update` | 20 | 60.0% | 45.0% | +15.0% |
-| `relative_timeframe` | 19 | 26.3% | 21.1% | +5.3% |
-| `unanswerable_refusal` | 22 | 0.0% | 0.0% | +0.0% |
+| `fact_recall` | 30 | 86.7% | 90.0% | -3.3% |
+| `cross_session_reasoning` | 30 | 23.3% | 43.3% | -20.0% |
+| `information_update` | 30 | 66.7% | 66.7% | +0.0% |
+| `relative_timeframe` | 30 | 23.3% | 30.0% | -6.7% |
+| `unanswerable_refusal` | 30 | 96.7% | 100.0% | -3.3% |
 
 ![QServe KV4 LongMemEval Diagnostics](../figures/wp3/qserve_kv4/longmem_diagnostics.png)
 
@@ -108,12 +98,13 @@ Tested with 4-bit Keys and Values, group_size=32, and smooth_attention_alpha=0.5
 
 On the 2D NIAH diagnostic sweep, exact-match retrieval across depths 0.0–0.9 is **2048: 100%, 4096: 100%**.
 
-On WP-3 LongMemEval (99 raw substring evaluations across 512–16,384 tokens), QServe KV4 records **28/99** (**2** regressions vs. 25/99 baseline; mean retention ratio = **1.00**). *Note: WP-3 LongMemEval scores are retained only for catastrophic-collapse detection due to substring-grading, 32-token truncation, and raw-prompt artifacts; use 2D NIAH and KL divergence for fidelity ranking.*
+On LongMemEval (150 quantile-sampled official questions at native length up to 32K, chat-templated, `max_tokens=128`, semantically graded), QServe KV4 achieves **89/150 (59.3%)** vs. baseline **99/150 (66.0%)**, with **13** quality regressions and mean KV retention ratio **1.00**.
 
 ### Pros
 
 - Reduces peak allocated VRAM at 32K by **18.6%** (10763 MB vs. 13225 MB baseline).
 - Achieves **100% NIAH exact-match retrieval** across all depths (0.0–0.9) at both 2,048 and 4,096 context lengths.
+- Preserves strong LongMemEval semantic accuracy (**89/150 = 59.3%** vs. 99/150 = 66.0% baseline; **13** quality regressions).
 
 ### Cons
 
