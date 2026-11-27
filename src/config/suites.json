@@ -79,16 +79,31 @@
     ]
   },
   "fix_epicache": {
-    "techniques": ["epicache"],
+    "techniques": [
+      "epicache"
+    ],
     "skip_hardware_sweeps": false,
     "force_longmem_ref": false,
     "skip_existing": false,
     "run_verify": true,
     "run_longmem": true,
     "run_niah": true,
-    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
-    "eval_contexts": [32768],
-    "niah_contexts": [2048, 4096]
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   },
   "settled_eval": {
     "techniques": [
@@ -307,6 +322,38 @@
       "arkvale",
       "qserve_kv4",
       "turboquant"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "wp3_all_6_fixes": {
+    "techniques": [
+      "shadowkv",
+      "headq",
+      "arkvale",
+      "qserve_kv4",
+      "turboquant",
+      "epicache"
     ],
     "skip_hardware_sweeps": false,
     "force_longmem_ref": false,
