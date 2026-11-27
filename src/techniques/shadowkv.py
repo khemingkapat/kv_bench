@@ -277,7 +277,7 @@ def _install_pytorch_shadowkv_hooks() -> None:
 
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-        from src.techniques.shadowkv_cache import get_active_shadowkv_cache
+        from src.techniques.shadowkv_cache import extract_rope_theta, get_active_shadowkv_cache
     except ImportError:
         return
 
@@ -293,6 +293,11 @@ def _install_pytorch_shadowkv_hooks() -> None:
             layer_idx = getattr(module, "layer_idx", None)
             if layer_idx is not None and layer_idx < len(cache.layers):
                 layer = cache.layers[layer_idx]
+                if not getattr(layer, "_theta_explicit", False) and not getattr(layer, "_theta_synced", False):
+                    config = getattr(module, "config", None)
+                    if config is not None:
+                        layer.theta = extract_rope_theta(config)
+                        layer._theta_synced = True
                 if query.shape[-2] == 1:
                     if getattr(layer, "is_offloaded", False):
                         # In decode step (single token query): resolve top-k sparse KV set
@@ -351,7 +356,7 @@ class ShadowKVTechnique(Technique):
         svd_threshold_tokens: int = 1024,
         swap_space_gb: int = 4,
         kv_cache_dtype: str = "auto",
-        theta: float = 10000.0,
+        theta: float | None = None,
     ):
         if svd_rank <= 0:
             raise ValueError(f"svd_rank must be positive, got {svd_rank}")
@@ -366,6 +371,13 @@ class ShadowKVTechnique(Technique):
         if swap_space_gb < 0:
             raise ValueError(f"swap_space_gb must be non-negative, got {swap_space_gb}")
 
+        if theta is not None:
+            from src.techniques.shadowkv_cache import _validate_theta
+
+            self.theta: float | None = _validate_theta(theta)
+        else:
+            self.theta = None
+
         self.svd_rank = int(svd_rank)
         self.chunk_size = int(chunk_size)
         self.topk_chunks = int(topk_chunks)
@@ -375,7 +387,6 @@ class ShadowKVTechnique(Technique):
         self.svd_threshold_tokens = int(svd_threshold_tokens)
         self.swap_space_gb = int(swap_space_gb)
         self.kv_cache_dtype = str(kv_cache_dtype)
-        self.theta = float(theta)
 
     def compute_boundaries(self, seq_len: int) -> ShadowKVBoundaryInfo:
         return compute_shadowkv_boundaries(
@@ -414,7 +425,7 @@ class ShadowKVTechnique(Technique):
                 "svd_threshold_tokens": self.svd_threshold_tokens,
                 "swap_space_gb": self.swap_space_gb,
                 "kv_cache_dtype": self.kv_cache_dtype,
-                "theta": self.theta,
+                "theta": self.theta if self.theta is not None else 10000.0,
             }
         )
         _install_vllm_shadowkv_hooks()
