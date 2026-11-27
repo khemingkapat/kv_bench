@@ -22,6 +22,24 @@ from src.techniques.turboquant_ops import (
 )
 
 
+INITIAL_CAPACITY = 1024
+LINEAR_GROWTH_THRESHOLD = 16384
+LINEAR_GROWTH_STEP = 2048
+
+
+def _next_capacity(current: int, required: int) -> int:
+    """Compute next pre-allocated capacity: double up to 16384, then +2048 linearly."""
+    if required <= current:
+        return current
+    cap = INITIAL_CAPACITY if current <= 0 else current
+    while cap < required:
+        if cap < LINEAR_GROWTH_THRESHOLD:
+            cap *= 2
+        else:
+            cap += LINEAR_GROWTH_STEP
+    return cap
+
+
 class TurboQuantLayer(DynamicLayer):
     """Cache layer storing asymmetrically quantized Key-Value representations.
 
@@ -30,6 +48,8 @@ class TurboQuantLayer(DynamicLayer):
     Total: 140 bytes / token / head (3.657x compression vs BF16).
     """
 
+    is_croppable = False
+
     def __init__(
         self,
         seed: int = 42,
@@ -37,6 +57,9 @@ class TurboQuantLayer(DynamicLayer):
         super().__init__()
         self.seed = seed
         self.total_tokens_seen: int = 0
+        self.capacity: int = 0
+        self.dtype: torch.dtype | None = None
+        self.device: torch.device | None = None
 
         # Compressed storage tensors
         self.key_packed: torch.Tensor | None = None
@@ -60,6 +83,15 @@ class TurboQuantLayer(DynamicLayer):
         self.accum_v_eps_dir: float = 0.0
         self.num_profile_chunks: int = 0
 
+    def lazy_initialization(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor | None = None,
+    ) -> None:
+        self.dtype = key_states.dtype
+        self.device = key_states.device
+        self.is_initialized = True
+
     def _init_constants(self, device: torch.device, num_kv_heads: int, head_dim: int) -> None:
         if self._c16 is None or self._c16.device != device:
             c16, t16, c8, t8 = get_codebook_tensors(device=device)
@@ -68,12 +100,115 @@ class TurboQuantLayer(DynamicLayer):
             self._c8 = c8
             self._t8 = t8
 
-        if self._s is None or self._s.device != device or self._s.shape[1] != num_kv_heads:
+        if (
+            self._s is None
+            or self._s.device != device
+            or self._s.shape[1] != num_kv_heads
+            or self._s.shape[-1] != head_dim
+        ):
             # Shape (1, num_kv_heads, 1, head_dim) to broadcast seamlessly with (batch, num_kv_heads, seq_len, head_dim)
             self._s = generate_rademacher_signs((1, num_kv_heads, 1, head_dim), device=device, seed=self.seed)
             self._s_prime = generate_rademacher_signs(
                 (1, num_kv_heads, 1, head_dim), device=device, seed=self.seed + 10007
             )
+
+    @staticmethod
+    def _grow_buffer(
+        buf: torch.Tensor | None,
+        shape: tuple[int, int, int, int],
+        dtype: torch.dtype,
+        device: torch.device,
+        used_tokens: int,
+    ) -> torch.Tensor:
+        new_buf = torch.empty(shape, dtype=dtype, device=device)
+        if buf is not None and used_tokens > 0:
+            new_buf[:, :, :used_tokens, :] = buf[:, :, :used_tokens, :]
+        return new_buf
+
+    def _ensure_capacity(
+        self,
+        batch: int,
+        num_kv_heads: int,
+        required: int,
+        head_dim: int,
+        device: torch.device,
+    ) -> None:
+        if self.key_packed is not None and required <= self.capacity:
+            return
+
+        new_cap = _next_capacity(self.capacity, required)
+        used = self.total_tokens_seen
+        packed_dim = head_dim // 2
+
+        # Grow-copy-replace each buffer individually to avoid 2x peak allocation
+        self.key_packed = self._grow_buffer(
+            self.key_packed, (batch, num_kv_heads, new_cap, packed_dim), torch.uint8, device, used
+        )
+        self.key_norms = self._grow_buffer(
+            self.key_norms, (batch, num_kv_heads, new_cap, 1), torch.float32, device, used
+        )
+        self.value_packed = self._grow_buffer(
+            self.value_packed, (batch, num_kv_heads, new_cap, packed_dim), torch.uint8, device, used
+        )
+        self.value_norms = self._grow_buffer(
+            self.value_norms, (batch, num_kv_heads, new_cap, 1), torch.float32, device, used
+        )
+        self.value_res_norms = self._grow_buffer(
+            self.value_res_norms, (batch, num_kv_heads, new_cap, 1), torch.float32, device, used
+        )
+        self.capacity = new_cap
+
+    def _decode_active_keys(self, target_dtype: torch.dtype) -> torch.Tensor:
+        assert self.key_packed is not None and self.key_norms is not None
+        assert self._s is not None and self._c16 is not None
+        seq_len = self.total_tokens_seen
+        return turboquant_decode_key(
+            self.key_packed[:, :, :seq_len, :],
+            self.key_norms[:, :, :seq_len, :],
+            self._s,
+            self._c16,
+            target_dtype=target_dtype,
+        )
+
+    def _decode_active_values(self, target_dtype: torch.dtype) -> torch.Tensor:
+        assert self.value_packed is not None and self.value_norms is not None and self.value_res_norms is not None
+        assert self._s is not None and self._s_prime is not None and self._c8 is not None
+        seq_len = self.total_tokens_seen
+        return turboquant_decode_value(
+            self.value_packed[:, :, :seq_len, :],
+            self.value_norms[:, :, :seq_len, :],
+            self.value_res_norms[:, :, :seq_len, :],
+            self._s,
+            self._s_prime,
+            self._c8,
+            target_dtype=target_dtype,
+        )
+
+    @property
+    def keys(self) -> torch.Tensor | None:
+        if not self.is_initialized or self.key_packed is None or self.total_tokens_seen == 0:
+            return None
+        return self._decode_active_keys(self.dtype or torch.bfloat16)
+
+    @keys.setter
+    def keys(self, value: Any) -> None:
+        # DynamicLayer.reset() assigns self.keys = None
+        pass
+
+    @property
+    def values(self) -> torch.Tensor | None:
+        if not self.is_initialized or self.value_packed is None or self.total_tokens_seen == 0:
+            return None
+        return self._decode_active_values(self.dtype or torch.bfloat16)
+
+    @values.setter
+    def values(self, value: Any) -> None:
+        # DynamicLayer.reset() assigns self.values = None
+        pass
+
+    @property
+    def original_positions(self) -> list[int]:
+        return list(range(self.total_tokens_seen))
 
     def update(
         self,
@@ -83,11 +218,48 @@ class TurboQuantLayer(DynamicLayer):
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize and append new tokens, then dequantize accumulated cache for SDPA."""
+        if key_states.ndim != 4 or value_states.ndim != 4:
+            raise ValueError(
+                f"Expected 4D key/value states, got {key_states.ndim}D and {value_states.ndim}D"
+            )
+        if key_states.shape != value_states.shape:
+            raise ValueError(
+                f"Key and value shapes must match, got {tuple(key_states.shape)} vs {tuple(value_states.shape)}"
+            )
+        if key_states.device != value_states.device:
+            raise ValueError(
+                f"Key and value devices must match, got {key_states.device} vs {value_states.device}"
+            )
+
+        batch_size, num_kv_heads, new_tokens, head_dim = key_states.shape
         device = key_states.device
         dtype = key_states.dtype
-        num_kv_heads = key_states.shape[1]
-        new_tokens = key_states.shape[-2]
-        head_dim = key_states.shape[-1]
+
+        if self.key_packed is not None:
+            exp_batch, exp_heads, _, exp_packed_dim = self.key_packed.shape
+            exp_dim = exp_packed_dim * 2
+            if (
+                batch_size != exp_batch
+                or num_kv_heads != exp_heads
+                or head_dim != exp_dim
+                or device != self.key_packed.device
+            ):
+                raise ValueError(
+                    "Input shape/device mismatch with initialized TurboQuantLayer: "
+                    f"expected (batch={exp_batch}, heads={exp_heads}, *, head_dim={exp_dim}, device={self.key_packed.device}), "
+                    f"got (batch={batch_size}, heads={num_kv_heads}, *, head_dim={head_dim}, device={device})"
+                )
+
+        if new_tokens == 0:
+            if self.key_packed is None or self.total_tokens_seen == 0:
+                return torch.empty_like(key_states), torch.empty_like(value_states)
+            return self._decode_active_keys(dtype), self._decode_active_values(dtype)
+
+        if not self.is_initialized:
+            self.lazy_initialization(key_states, value_states)
+        else:
+            self.dtype = dtype
+            self.device = device
 
         self._init_constants(device, num_kv_heads, head_dim)
         assert self._s is not None and self._s_prime is not None
@@ -114,61 +286,44 @@ class TurboQuantLayer(DynamicLayer):
             self.accum_v_eps_dir += m_v["eps_dir"]
             self.num_profile_chunks += 1
 
-        # 3. Append to compressed cache buffers
-        if not self.is_initialized or self.key_packed is None:
-            self.key_packed = k_packed_new
-            self.key_norms = k_norm_new
-            self.value_packed = v_packed_new
-            self.value_norms = v_norm_new
-            self.value_res_norms = v_res_norm_new
-            self.is_initialized = True
-        else:
-            self.key_packed = torch.cat([self.key_packed, k_packed_new], dim=-2)
-            self.key_norms = torch.cat([self.key_norms, k_norm_new], dim=-2)
-            self.value_packed = torch.cat([self.value_packed, v_packed_new], dim=-2)
-            self.value_norms = torch.cat([self.value_norms, v_norm_new], dim=-2)
-            self.value_res_norms = torch.cat([self.value_res_norms, v_res_norm_new], dim=-2)
+        # 3. Ensure pre-allocated capacity and write in-place
+        curr = self.total_tokens_seen
+        end = curr + new_tokens
+        self._ensure_capacity(batch_size, num_kv_heads, end, head_dim, device)
+        assert self.key_packed is not None and self.key_norms is not None
+        assert self.value_packed is not None and self.value_norms is not None and self.value_res_norms is not None
 
-        self.total_tokens_seen += new_tokens
+        self.key_packed[:, :, curr:end, :] = k_packed_new
+        self.key_norms[:, :, curr:end, :] = k_norm_new
+        self.value_packed[:, :, curr:end, :] = v_packed_new
+        self.value_norms[:, :, curr:end, :] = v_norm_new
+        self.value_res_norms[:, :, curr:end, :] = v_res_norm_new
+        self.total_tokens_seen = end
 
-        # 4. Dequantize full accumulated cache back to model dtype for Hugging Face SDPA
-        keys_out = turboquant_decode_key(
-            self.key_packed, self.key_norms, self._s, self._c16, target_dtype=dtype
-        )
-        values_out = turboquant_decode_value(
-            self.value_packed,
-            self.value_norms,
-            self.value_res_norms,
-            self._s,
-            self._s_prime,
-            self._c8,
-            target_dtype=dtype,
-        )
-
-        return keys_out, values_out
+        # 4. Dequantize active slice back to model dtype for Hugging Face SDPA
+        return self._decode_active_keys(dtype), self._decode_active_values(dtype)
 
     def get_seq_length(self) -> int:
-        if self.is_initialized and self.key_packed is not None:
-            return self.key_packed.shape[-2]
-        return 0
+        return self.total_tokens_seen
 
     def get_max_length(self) -> int | None:
         return None
 
     def get_cache_size_bytes(self) -> tuple[int, int]:
-        """Return (physical_stored_bytes, theoretical_compressed_bytes)."""
-        if not self.is_initialized or self.key_packed is None:
+        """Return (physical_stored_bytes, theoretical_compressed_bytes) for active tokens."""
+        if not self.is_initialized or self.key_packed is None or self.total_tokens_seen == 0:
             return 0, 0
-        seq_len = self.key_packed.shape[-2]
+        seq_len = self.total_tokens_seen
         batch = self.key_packed.shape[0]
         num_heads = self.key_packed.shape[1]
         head_dim = self.key_packed.shape[-1] * 2
 
-        # Physical stored bytes in PyTorch tensors
-        phys = 0
-        for t in (self.key_packed, self.key_norms, self.value_packed, self.value_norms, self.value_res_norms):
-            if t is not None:
-                phys += t.nbytes
+        # Physical stored bytes for active slice
+        phys = sum(
+            t[:, :, :seq_len].numel() * t.element_size()
+            for t in (self.key_packed, self.key_norms, self.value_packed, self.value_norms, self.value_res_norms)
+            if t is not None
+        )
 
         # Theoretical TurboQuant budget per token per head:
         # Key: 4-bit * head_dim / 8 = 64 bytes + 4 bytes FP32 norm = 68 bytes
@@ -177,6 +332,24 @@ class TurboQuantLayer(DynamicLayer):
         theo_per_token_head = (head_dim // 2) + 4 + (head_dim * 3 // 8) + (head_dim // 8) + 8
         theo = batch * num_heads * seq_len * theo_per_token_head
         return phys, theo
+
+    def reset(self) -> None:
+        self.key_packed = None
+        self.key_norms = None
+        self.value_packed = None
+        self.value_norms = None
+        self.value_res_norms = None
+        self.capacity = 0
+        self.total_tokens_seen = 0
+        self.accum_k_eps_snr = 0.0
+        self.accum_k_eps_dir = 0.0
+        self.accum_v_eps_snr = 0.0
+        self.accum_v_eps_dir = 0.0
+        self.num_profile_chunks = 0
+        self._s = None
+        self._s_prime = None
+        self.is_initialized = False
+        super().reset()
 
 
 class TurboQuantCache(Cache):
@@ -264,4 +437,4 @@ class TurboQuantCache(Cache):
 
     def __iter__(self) -> Iterator[tuple[Any, Any, Any]]:
         for layer in self.layers:
-            yield getattr(layer, "key_packed", None), getattr(layer, "value_packed", None), None
+            yield layer.keys, layer.values, None
