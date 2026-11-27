@@ -1,4 +1,6 @@
+import json
 import math
+import pathlib
 import unittest
 from types import SimpleNamespace
 
@@ -9,6 +11,8 @@ from src.core.axis import Axis
 from src.core.registry import get_technique, list_techniques
 from src.techniques.shadowkv import (
     _ACTIVE_SHADOWKV_CONFIG,
+    _install_pytorch_shadowkv_hooks,
+    _uninstall_pytorch_shadowkv_hooks,
     compute_shadowkv_boundaries,
     compute_shadowkv_paged_block_boundaries,
     estimate_shadowkv_pcie_savings,
@@ -88,6 +92,31 @@ class TestShadowKVTechnique(unittest.TestCase):
             get_technique("shadowkv", temporal_reuse_target=1.2)
         with self.assertRaises(ValueError):
             get_technique("shadowkv", swap_space_gb=-1)
+
+    def test_invalid_theta_rejected(self):
+        invalid_thetas = [0, -1.0, float("nan"), float("inf"), float("-inf"), True, False]
+        for bad_theta in invalid_thetas:
+            with self.subTest(theta=bad_theta):
+                with self.assertRaises(ValueError):
+                    ShadowKVLayer(theta=bad_theta)
+                with self.assertRaises(ValueError):
+                    ShadowKVCache(theta=bad_theta)
+                with self.assertRaises(ValueError):
+                    get_technique("shadowkv", theta=bad_theta)
+
+    def test_fix_shadowkv_suite_config(self):
+        suites_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "config" / "suites.json"
+        with suites_path.open("r", encoding="utf-8") as f:
+            suites = json.load(f)
+        self.assertIn("fix_shadowkv", suites)
+        cfg = suites["fix_shadowkv"]
+        self.assertEqual(cfg.get("techniques"), ["shadowkv"])
+        self.assertIs(cfg.get("force_longmem_ref"), False)
+        self.assertIs(cfg.get("skip_hardware_sweeps"), False)
+        self.assertIs(cfg.get("run_verify"), True)
+        self.assertIs(cfg.get("run_longmem"), True)
+        self.assertIs(cfg.get("run_niah"), True)
+        self.assertIs(cfg.get("skip_existing"), False)
 
     def test_boundary_calculations(self):
         # 1. Short sequence fits within dense threshold (512 <= 1024)
@@ -173,18 +202,75 @@ class TestShadowKVMathAndCache(unittest.TestCase):
         self.assertLess(max_err, 1e-6)
 
     def test_svd_key_decomposition_accuracy(self):
-        b, h_kv, seq_len, d = 2, 4, 256, 128
-        keys_pre = torch.randn(b, h_kv, seq_len, d, dtype=torch.float32)
-        r = 64
+        # AC1: Cross-head SVD on (1, 8, 512, 128) with svd_rank=160
+        b, h_kv, seq_len, d = 1, 8, 512, 128
+        true_rank = 160
+        u_true = torch.randn(b, seq_len, true_rank, dtype=torch.float32)
+        v_true = torch.randn(b, true_rank, h_kv * d, dtype=torch.float32)
+        flat_low_rank = torch.matmul(u_true, v_true)
+        keys_pre = flat_low_rank.reshape(b, seq_len, h_kv, d).permute(0, 2, 1, 3).contiguous()
 
-        a, b_mat = perform_svd_key_decomposition(keys_pre, svd_rank=r)
-        self.assertEqual(a.shape, (b, h_kv, seq_len, r))
-        self.assertEqual(b_mat.shape, (b, h_kv, r, d))
+        a, b_mat = perform_svd_key_decomposition(keys_pre, svd_rank=160)
+        self.assertEqual(a.shape, (b, seq_len, 160))
+        self.assertEqual(b_mat.shape, (b, 160, h_kv * d))
 
-        recon = torch.matmul(a, b_mat)
-        # Verify high cosine similarity across reconstructed channels
+        recon = torch.matmul(a, b_mat).reshape(b, seq_len, h_kv, d).permute(0, 2, 1, 3)
         cos_sim = F.cosine_similarity(keys_pre.flatten(start_dim=2), recon.flatten(start_dim=2), dim=-1)
-        self.assertTrue((cos_sim > 0.85).all())
+        self.assertTrue((cos_sim > 0.99).all())
+
+        # Rank clamping: s < svd_rank
+        keys_short = torch.randn(1, 4, 32, 64, dtype=torch.float32)
+        a_short, b_short = perform_svd_key_decomposition(keys_short, svd_rank=160)
+        self.assertEqual(a_short.shape, (1, 32, 32))
+        self.assertEqual(b_short.shape, (1, 32, 4 * 64))
+
+        # Rank clamping: svd_rank > h_kv * d
+        keys_narrow = torch.randn(1, 2, 128, 32, dtype=torch.float32)
+        a_narrow, b_narrow = perform_svd_key_decomposition(keys_narrow, svd_rank=160)
+        self.assertEqual(a_narrow.shape, (1, 128, 64))
+        self.assertEqual(b_narrow.shape, (1, 64, 64))
+
+    def test_resolve_sparse_kv_post_rope_reconstruction_accuracy(self):
+        # AC1: Post-RoPE reconstruction via resolve_sparse_kv achieves > 0.99 cosine sim on low-rank keys
+        b, h_kv, seq_len, d = 1, 4, 128, 64
+        true_rank = 16
+        u_true = torch.randn(b, seq_len, true_rank, dtype=torch.float32)
+        v_true = torch.randn(b, true_rank, h_kv * d, dtype=torch.float32)
+        keys_pre = torch.matmul(u_true, v_true).reshape(b, seq_len, h_kv, d).permute(0, 2, 1, 3).contiguous()
+
+        cos, sin = compute_rope_cos_sin(seq_len=seq_len, head_dim=d, device=keys_pre.device, dtype=keys_pre.dtype, theta=10000.0)
+        keys_post = apply_rope(keys_pre, cos, sin)
+        vals = torch.randn(b, h_kv, seq_len, d, dtype=torch.float32)
+
+        layer = ShadowKVLayer(
+            svd_rank=32,
+            chunk_size=8,
+            topk_chunks=4,
+            outlier_ratio=0.05,
+            local_window_tokens=16,
+            svd_threshold_tokens=64,
+            theta=10000.0,
+        )
+        layer.update(keys_post, vals)
+        layer.prune()
+
+        # Pick a non-anchor chunk so resolve_sparse_kv must reconstruct missed keys
+        anchor_chunks = set(layer.outlier_chunk_indices) | {layer.num_chunks - 1, layer.num_chunks - 2}
+        target_chunks = [c for c in range(layer.num_chunks) if c not in anchor_chunks]
+        self.assertGreater(len(target_chunks), 0)
+        target_c = target_chunks[0]
+        q = layer.landmarks[:, :, target_c : target_c + 1, :].clone() * 10.0
+
+        layer.resolve_sparse_kv(q)
+        self.assertIsNotNone(layer.cached_sparse_keys)
+        self.assertIsNotNone(layer.cached_sparse_pos)
+        self.assertEqual(layer.cached_sparse_keys.shape[0], b)
+        self.assertEqual(layer.cached_sparse_keys.shape[1], h_kv)
+        self.assertEqual(layer.cached_sparse_keys.shape[3], d)
+
+        expected_k = keys_post[:, :, layer.cached_sparse_pos, :]
+        cos_sim = F.cosine_similarity(expected_k, layer.cached_sparse_keys, dim=-1)
+        self.assertTrue((cos_sim > 0.99).all())
 
     def test_chunk_landmarks_and_outlier_detection(self):
         b, h_kv, seq_len, d = 1, 2, 64, 64
@@ -289,3 +375,195 @@ class TestShadowKVMathAndCache(unittest.TestCase):
         self.assertIn("pcie_transfer_bytes", metrics)
         self.assertIn("theoretical_memory_savings_ratio", metrics)
         self.assertIn("effective_bandwidth_gb_s", metrics)
+
+    def test_extract_rope_theta_and_sdpa_hook_sync(self):
+        # AC2: extract_rope_theta & dynamic sync in shadowkv_sdpa_attention_forward
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        from src.techniques.shadowkv_cache import extract_rope_theta
+
+        self.assertEqual(
+            extract_rope_theta(SimpleNamespace(rope_parameters={"rope_theta": 5000000.0}, rope_theta=None)),
+            5000000.0,
+        )
+        self.assertEqual(
+            extract_rope_theta(SimpleNamespace(rope_parameters={"rope_theta": None}, rope_theta=1000000.0)),
+            1000000.0,
+        )
+        self.assertEqual(
+            extract_rope_theta(SimpleNamespace(rope_parameters=None, rope_theta=None, rope_scaling={"rope_theta": 500000.0})),
+            500000.0,
+        )
+        self.assertEqual(extract_rope_theta(None), 10000.0)
+
+        self.addCleanup(_uninstall_pytorch_shadowkv_hooks)
+        _install_pytorch_shadowkv_hooks()
+        sdpa_fn = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+        self.assertIsNotNone(sdpa_fn)
+
+        b, h, s, d = 1, 2, 16, 64
+        q = torch.randn(b, h, s, d)
+        k = torch.randn(b, h, s, d)
+        v = torch.randn(b, h, s, d)
+
+        # 1. config=None must NOT prematurely latch _theta_synced; subsequent valid config syncs
+        cache = ShadowKVCache(svd_threshold_tokens=64)
+        layer = cache.layers[0]
+        mod_none = SimpleNamespace(
+            layer_idx=0,
+            config=None,
+            num_key_value_groups=1,
+            scaling=d**-0.5,
+            attention_dropout=0.0,
+            is_causal=False,
+        )
+        sdpa_fn(mod_none, q, k, v, attention_mask=None)
+        self.assertFalse(layer._theta_synced)
+
+        mod_qwen3 = SimpleNamespace(
+            layer_idx=0,
+            config=SimpleNamespace(rope_parameters={"rope_theta": 5000000.0}, rope_theta=None),
+            num_key_value_groups=1,
+            scaling=d**-0.5,
+            attention_dropout=0.0,
+            is_causal=False,
+        )
+        sdpa_fn(mod_qwen3, q, k, v, attention_mask=None)
+        self.assertEqual(layer.theta, 5000000.0)
+        self.assertTrue(layer._theta_synced)
+
+        # 2. Fallback when rope_parameters["rope_theta"] is None and config.rope_theta is set
+        cache2 = ShadowKVCache(svd_threshold_tokens=64)
+        mod_fallback = SimpleNamespace(
+            layer_idx=0,
+            config=SimpleNamespace(rope_parameters={"rope_theta": None}, rope_theta=1000000.0),
+            num_key_value_groups=1,
+            scaling=d**-0.5,
+            attention_dropout=0.0,
+            is_causal=False,
+        )
+        sdpa_fn(mod_fallback, q, k, v, attention_mask=None)
+        self.assertEqual(cache2.layers[0].theta, 1000000.0)
+
+        # 3. Explicit theta must NOT be overwritten by hook
+        cache3 = ShadowKVCache(svd_threshold_tokens=64, theta=50000.0)
+        sdpa_fn(mod_qwen3, q, k, v, attention_mask=None)
+        self.assertEqual(cache3.layers[0].theta, 50000.0)
+
+    def test_pinned_cpu_staging_lifecycle_and_dense_fallback(self):
+        # AC3: Chunked prefill staging in _cpu_k_buf / _cpu_v_buf, prune() cleanup, dense decode, reset()
+        cache = ShadowKVCache(svd_rank=16, chunk_size=8, topk_chunks=4, svd_threshold_tokens=64)
+        b, h_kv, d = 1, 2, 32
+
+        k0 = torch.randn(b, h_kv, 48, d)
+        v0 = torch.randn(b, h_kv, 48, d)
+        out_k0, out_v0 = cache.update(k0, v0, layer_idx=0)
+        layer = cache.layers[0]
+
+        self.assertIsNone(layer.dense_keys)
+        self.assertIsNone(layer.dense_values)
+        self.assertIsNotNone(layer._cpu_k_buf)
+        self.assertIsNotNone(layer._cpu_v_buf)
+        self.assertEqual(layer._cpu_k_buf.device.type, "cpu")
+        self.assertEqual(layer._cpu_v_buf.device.type, "cpu")
+        self.assertTrue(torch.equal(out_k0, k0))
+        self.assertTrue(torch.equal(out_v0, v0))
+
+        k1 = torch.randn(b, h_kv, 48, d)
+        v1 = torch.randn(b, h_kv, 48, d)
+        out_k1, out_v1 = cache.update(k1, v1, layer_idx=0)
+        self.assertIsNone(layer.dense_keys)
+        self.assertIsNone(layer.dense_values)
+        self.assertTrue(torch.equal(out_k1, torch.cat([k0, k1], dim=2)))
+        self.assertTrue(torch.equal(out_v1, torch.cat([v0, v1], dim=2)))
+
+        layer.prune()
+        self.assertTrue(layer.is_offloaded)
+        self.assertIsNone(layer._cpu_k_buf)
+        self.assertIsNotNone(layer.cpu_values)
+        self.assertEqual(layer.cpu_values.device.type, "cpu")
+        self.assertEqual(layer.cpu_values.shape[2], 96)
+        self.assertEqual(layer.key_a.shape, (b, 96, 16))
+
+        layer.reset()
+        self.assertIsNone(layer._cpu_k_buf)
+        self.assertIsNone(layer._cpu_v_buf)
+        self.assertEqual(len(layer._lru_chunks), 0)
+
+        # Cold seq_len == 1 decode
+        cold_cache = ShadowKVCache(svd_rank=16, chunk_size=8, topk_chunks=4, svd_threshold_tokens=64)
+        k_cold = torch.randn(b, h_kv, 1, d)
+        v_cold = torch.randn(b, h_kv, 1, d)
+        ck, cv = cold_cache.update(k_cold, v_cold, layer_idx=0)
+        self.assertFalse(cold_cache.layers[0].is_offloaded)
+        self.assertTrue(torch.equal(ck, k_cold))
+        self.assertTrue(torch.equal(cv, v_cold))
+
+        # S=1024 -> 1025 mid-decode prune()
+        mid_cache = ShadowKVCache(svd_rank=16, chunk_size=8, topk_chunks=4, svd_threshold_tokens=1024)
+        k_1024 = torch.randn(b, h_kv, 1024, d)
+        v_1024 = torch.randn(b, h_kv, 1024, d)
+        mid_cache.update(k_1024, v_1024, layer_idx=0)
+        mid_layer = mid_cache.layers[0]
+        mid_layer.prune()
+        self.assertFalse(mid_layer.is_offloaded)
+
+        # Step to 1025 (dense) then next decode triggers prune()
+        mid_cache.update(torch.randn(b, h_kv, 1, d), torch.randn(b, h_kv, 1, d), layer_idx=0)
+        self.assertEqual(mid_layer.total_tokens_seen, 1025)
+        mid_cache.update(torch.randn(b, h_kv, 1, d), torch.randn(b, h_kv, 1, d), layer_idx=0)
+        self.assertTrue(mid_layer.is_offloaded)
+
+    def test_bounded_lru_eviction_and_zero_duplication(self):
+        # AC4: Bounded LRU eviction (<= topk_chunks * chunk_size), partial last chunk, zero token duplication
+        b, h_kv, h_q, d = 1, 2, 4, 32
+        prefill_len = 253  # 253 % 8 != 0
+        cache = ShadowKVCache(
+            svd_rank=16,
+            chunk_size=8,
+            topk_chunks=4,
+            outlier_ratio=0.05,
+            local_window_tokens=16,
+            svd_threshold_tokens=64,
+        )
+        k_prefill = torch.randn(b, h_kv, prefill_len, d)
+        v_prefill = torch.randn(b, h_kv, prefill_len, d)
+        cache.update(k_prefill, v_prefill, layer_idx=0)
+        layer = cache.layers[0]
+        layer.prune()
+
+        anchor_set = set(layer.gpu_anchor_pos.tolist())
+        # Candidate non-anchor chunks whose tokens are not all in anchor_set
+        candidate_chunks = []
+        for c in range(layer.num_chunks):
+            start = c * layer.chunk_size
+            end = min(prefill_len, start + layer.chunk_size)
+            if any(pos not in anchor_set for pos in range(start, end)):
+                candidate_chunks.append(c)
+        self.assertGreaterEqual(len(candidate_chunks), 8)
+
+        # 20 decode steps shifting across distinct candidate chunks
+        for step in range(20):
+            target_c = candidate_chunks[step % len(candidate_chunks)]
+            q = layer.landmarks[:, :, target_c : target_c + 1, :].repeat(1, h_q // h_kv, 1, 1) * 10.0
+            layer.resolve_sparse_kv(q)
+
+            self.assertLessEqual(len(layer.cached_topk_indices), 4)
+            if layer.cached_sparse_keys is not None:
+                self.assertLessEqual(layer.cached_sparse_keys.shape[2], 32)
+                self.assertEqual(layer.cached_sparse_values.shape[2], layer.cached_sparse_keys.shape[2])
+                self.assertEqual(layer.cached_sparse_pos.shape[0], layer.cached_sparse_keys.shape[2])
+                sparse_set = set(layer.cached_sparse_pos.tolist())
+                self.assertTrue(anchor_set.isdisjoint(sparse_set))
+
+        # Verify cache-level hit/miss properties match layer sums
+        self.assertEqual(cache.temporal_hits, sum(l.temporal_hits for l in cache.layers))
+        self.assertEqual(cache.temporal_misses, sum(l.temporal_misses for l in cache.layers))
+
+        # Verify LRU recency: access c0, then 4 distinct chunks c1..c4 -> c0 must be evicted, c1..c4 retained
+        c0, c1, c2, c3, c4 = candidate_chunks[:5]
+        for c in (c0, c1, c2, c3, c4):
+            # Build query strongly favoring only chunk c (and suppress others)
+            q = layer.landmarks[:, :, c : c + 1, :].repeat(1, h_q // h_kv, 1, 1) * 20.0
+            layer.resolve_sparse_kv(q)
+        self.assertLessEqual(len(layer.cached_topk_indices), 4)
+        self.assertIn(c4, layer.cached_topk_indices)
