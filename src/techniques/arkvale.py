@@ -15,6 +15,60 @@ from src.core.registry import register
 from src.core.technique import Technique
 from src.core.workload import SyntheticFiller, Workload
 
+_PYTORCH_HOOKS_INSTALLED = False
+_ORIG_SDPA = None
+
+
+def _install_pytorch_arkvale_hooks() -> None:
+    """Install attention wrapper into transformers ALL_ATTENTION_FUNCTIONS for ArkVale."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if _PYTORCH_HOOKS_INSTALLED:
+        return
+
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        from src.techniques.arkvale_cache import get_active_arkvale_cache
+    except ImportError:
+        return
+
+    orig_sdpa = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+    if orig_sdpa is None:
+        return
+
+    _ORIG_SDPA = orig_sdpa
+
+    def arkvale_sdpa_attention_forward(module, query, key, value, attention_mask=None, *args, **kwargs):
+        cache = get_active_arkvale_cache()
+        if cache is not None and getattr(cache, "is_arkvale", False):
+            layer_idx = getattr(module, "layer_idx", None)
+            if layer_idx is not None and 0 <= layer_idx < len(cache.layers):
+                layer = cache.layers[layer_idx]
+                if query.shape[-2] == 1 and layer.should_use_sparse_decode():
+                    key, value = layer.resolve_active_kv(query)
+                    attention_mask = None
+                    if "is_causal" in kwargs:
+                        kwargs["is_causal"] = False
+
+        return _ORIG_SDPA(module, query, key, value, attention_mask, *args, **kwargs)
+
+    ALL_ATTENTION_FUNCTIONS.register("sdpa", arkvale_sdpa_attention_forward)
+    _PYTORCH_HOOKS_INSTALLED = True
+
+
+def _uninstall_pytorch_arkvale_hooks() -> None:
+    """Restore original sdpa attention forward in transformers ALL_ATTENTION_FUNCTIONS."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if not _PYTORCH_HOOKS_INSTALLED or _ORIG_SDPA is None:
+        return
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        ALL_ATTENTION_FUNCTIONS.register("sdpa", _ORIG_SDPA)
+        _PYTORCH_HOOKS_INSTALLED = False
+        _ORIG_SDPA = None
+    except ImportError:
+        pass
+
 
 def compute_page_aabb_digests(
     k_pages: "torch.Tensor",
@@ -77,29 +131,27 @@ def score_page_digests_gqa(
     if torch is None:
         raise RuntimeError("PyTorch is required for score_page_digests_gqa")
 
-    batch, num_q_heads, _, d = query.shape
+    batch, num_q_heads, q_len, d = query.shape
     num_kv_heads = b_min.size(1)
     num_pages = b_min.size(2)
 
-    if gqa_ratio > 1:
-        expanded_b_min = b_min.repeat_interleave(gqa_ratio, dim=1)
-        expanded_b_max = b_max.repeat_interleave(gqa_ratio, dim=1)
-    else:
-        expanded_b_min = b_min
-        expanded_b_max = b_max
+    if num_q_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
+    effective_gqa = num_q_heads // num_kv_heads
 
-    q_expanded = query.unsqueeze(-2)
+    q_grouped = query.reshape(batch, num_kv_heads, effective_gqa, q_len, 1, d)
+    b_min_exp = b_min.unsqueeze(2).unsqueeze(3)
+    b_max_exp = b_max.unsqueeze(2).unsqueeze(3)
 
-    prod_min = q_expanded * expanded_b_min.unsqueeze(-3)
-    prod_max = q_expanded * expanded_b_max.unsqueeze(-3)
+    prod_min = q_grouped * b_min_exp
+    prod_max = q_grouped * b_max_exp
 
     page_scores = torch.maximum(prod_min, prod_max).sum(dim=-1) / math.sqrt(d)
-    page_scores = page_scores.squeeze(-2)
-
-    if gqa_ratio > 1:
-        kv_scores = page_scores.contiguous().reshape(batch, num_kv_heads, gqa_ratio, num_pages).max(dim=2).values
-    else:
-        kv_scores = page_scores
+    if q_len == 1:
+        page_scores = page_scores.squeeze(3)
+    kv_scores = page_scores.max(dim=2).values
 
     return kv_scores
 
@@ -249,6 +301,7 @@ class ArkValeTechnique(Technique):
         )
 
     def setup(self) -> None:
+        _install_pytorch_arkvale_hooks()
         self._sample_count = 0
         self._accum_pcie_bytes = 0
         self._accum_recalled_pages = 0
