@@ -283,6 +283,8 @@ class ShadowKVLayer(DynamicLayer):
         self.num_chunks: int = 0
         self.outlier_chunk_indices: list[int] = []
         self._anchor_token_set: set[int] = set()
+        self._candidate_tokens: dict[int, list[int]] | None = None
+        self._ineligible_chunk_mask: torch.Tensor | None = None
 
         # GPU working cache: Outliers + Local window
         self.gpu_anchor_keys: torch.Tensor | None = None
@@ -483,6 +485,28 @@ class ShadowKVLayer(DynamicLayer):
         self.cpu_values = self._cpu_v_buf[:, :, :s, :]
         self.dense_keys = None
         self.dense_values = None
+        self._build_candidate_index(target_device)
+
+    def _build_candidate_index(self, device: torch.device) -> tuple[dict[int, list[int]], torch.Tensor]:
+        """Precompute eligible non-anchor chunk tokens and boolean mask once per sample."""
+        outlier_set = set(self.outlier_chunk_indices)
+        candidate_tokens: dict[int, list[int]] = {}
+        ineligible = torch.ones(self.num_chunks, dtype=torch.bool, device="cpu")
+        for c_idx in range(self.num_chunks):
+            if c_idx in outlier_set:
+                continue
+            start = c_idx * self.chunk_size
+            end = min(self.prefill_seq_len, start + self.chunk_size)
+            if start >= self.prefill_seq_len:
+                continue
+            non_anchor = [pos for pos in range(start, end) if pos not in self._anchor_token_set]
+            if non_anchor:
+                candidate_tokens[c_idx] = non_anchor
+                ineligible[c_idx] = False
+        mask = ineligible.to(device=device)
+        self._candidate_tokens = candidate_tokens
+        self._ineligible_chunk_mask = mask
+        return candidate_tokens, mask
 
     def _reconstruct_keys(
         self,
@@ -535,30 +559,24 @@ class ShadowKVLayer(DynamicLayer):
             chunk_scores = attn_scores.amax(dim=(2, 3))  # [B, H_kv, num_chunks]
         else:
             attn_scores = torch.matmul(query, landmarks_t) / math.sqrt(d)
-            chunk_scores = attn_scores.squeeze(2)  # [B, H_kv, num_chunks]
+            chunk_scores = attn_scores.amax(dim=2)  # [B, H_kv, num_chunks]
 
         # Center per KV head before cross-head max pooling so high-baseline heads don't starve others
         chunk_scores = chunk_scores - chunk_scores.amax(dim=-1, keepdim=True)
         pooled_scores = chunk_scores.amax(dim=(0, 1))  # [num_chunks]
 
         # 2. Global top-k chunk selection across heads (masking already-resident anchor chunks)
-        outlier_set = set(self.outlier_chunk_indices)
-        candidate_tokens: dict[int, list[int]] = {}
-        masked_scores = pooled_scores.clone()
-        for c_idx in range(self.num_chunks):
-            if c_idx in outlier_set:
-                masked_scores[c_idx] = float("-inf")
-                continue
-            start = c_idx * self.chunk_size
-            end = min(self.prefill_seq_len, start + self.chunk_size)
-            if start >= self.prefill_seq_len:
-                masked_scores[c_idx] = float("-inf")
-                continue
-            non_anchor = [pos for pos in range(start, end) if pos not in self._anchor_token_set]
-            if not non_anchor:
-                masked_scores[c_idx] = float("-inf")
-            else:
-                candidate_tokens[c_idx] = non_anchor
+        if (
+            self._candidate_tokens is None
+            or self._ineligible_chunk_mask is None
+            or self._ineligible_chunk_mask.device != query.device
+        ):
+            candidate_tokens, ineligible_mask = self._build_candidate_index(query.device)
+        else:
+            candidate_tokens = self._candidate_tokens
+            ineligible_mask = self._ineligible_chunk_mask
+
+        masked_scores = pooled_scores.masked_fill(ineligible_mask, float("-inf"))
 
         k_val = min(self.topk_chunks, len(candidate_tokens))
         chunk_tokens: dict[int, list[int]] = {}
@@ -683,6 +701,7 @@ class ShadowKVLayer(DynamicLayer):
         self._device = None
         self._dtype = None
         if not self._theta_explicit:
+            self.theta = 10000.0
             self._theta_synced = False
         self.dense_keys = None
         self.dense_values = None
@@ -694,6 +713,8 @@ class ShadowKVLayer(DynamicLayer):
         self.num_chunks = 0
         self.outlier_chunk_indices = []
         self._anchor_token_set.clear()
+        self._candidate_tokens = None
+        self._ineligible_chunk_mask = None
         self.gpu_anchor_keys = None
         self.gpu_anchor_values = None
         self.gpu_anchor_pos = None
