@@ -14,6 +14,23 @@ from src.techniques.qserve_kv4 import dequantize_kv_int4, quantize_kv_int4
 
 _ACTIVE_QSERVE_CACHE_REF: weakref.ReferenceType[QServeKVCache] | None = None
 
+CAPACITY_MIN = 1024
+CAPACITY_DOUBLE_THRESHOLD = 16384
+CAPACITY_LINEAR_STEP = 2048
+
+
+def _compute_new_capacity(current_capacity: int, required_capacity: int) -> int:
+    """Compute next buffer capacity: double up to 16K, then grow in +2048 linear steps."""
+    if current_capacity < 0:
+        raise ValueError(f"current_capacity must be >= 0, got {current_capacity}")
+    if required_capacity <= 0:
+        raise ValueError(f"required_capacity must be > 0, got {required_capacity}")
+    if current_capacity >= required_capacity:
+        return current_capacity
+    if required_capacity <= CAPACITY_DOUBLE_THRESHOLD:
+        return max(required_capacity, current_capacity * 2, CAPACITY_MIN)
+    return ((required_capacity + CAPACITY_LINEAR_STEP - 1) // CAPACITY_LINEAR_STEP) * CAPACITY_LINEAR_STEP
+
 
 def get_active_qserve_cache() -> QServeKVCache | None:
     """Return currently active QServeKVCache instance if alive, else None."""
@@ -84,8 +101,8 @@ class QServeKVLayer(DynamicLayer):
         recon = dequantize_kv_int4(
             p_view, s_view, original_dtype=self.target_dtype, group_size=self.group_size
         )
-        if self.smooth_k is not None:
-            recon = (recon * self.smooth_k).to(self.target_dtype)
+        if self.smooth_k is not None and self.alpha != 0.0:
+            recon.mul_(self.smooth_k.to(recon.dtype))
         return recon
 
     @keys.setter
@@ -127,7 +144,7 @@ class QServeKVLayer(DynamicLayer):
         if self.capacity >= required_capacity:
             return
 
-        new_capacity = max(required_capacity, self.capacity * 2, 1024)
+        new_capacity = _compute_new_capacity(self.capacity, required_capacity)
         packed_dim = head_dim // 2
         num_groups = head_dim // self.group_size
 
@@ -136,13 +153,13 @@ class QServeKVLayer(DynamicLayer):
             dtype=torch.uint8,
             device=target_device,
         )
-        new_k_s = torch.empty(
+        new_k_s = torch.zeros(
             (batch_size, num_kv, new_capacity, num_groups, 1),
             dtype=target_dtype,
             device=target_device,
         )
         new_v_p = torch.empty_like(new_k_p)
-        new_v_s = torch.empty_like(new_k_s)
+        new_v_s = torch.zeros_like(new_k_s)
 
         if self.total_tokens_seen > 0 and self.k_packed_buf is not None:
             new_k_p[:, :, : self.total_tokens_seen].copy_(self.k_packed_buf[:, :, : self.total_tokens_seen])
@@ -199,7 +216,10 @@ class QServeKVLayer(DynamicLayer):
 
         self._ensure_smooth_k(key_states)
         assert self.smooth_k is not None
-        k_smooth = (key_states / self.smooth_k).to(key_states.dtype)
+        if self.alpha == 0.0:
+            k_smooth = key_states
+        else:
+            k_smooth = (key_states / self.smooth_k).to(key_states.dtype)
 
         k_p, k_s = quantize_kv_int4(k_smooth, group_size=self.group_size)
         v_p, v_s = quantize_kv_int4(value_states, group_size=self.group_size)
