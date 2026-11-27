@@ -260,5 +260,32 @@
       2048,
       4096
     ]
+  },
+  "fix_turboquant": {
+    "techniques": [
+      "turboquant"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   }
 }

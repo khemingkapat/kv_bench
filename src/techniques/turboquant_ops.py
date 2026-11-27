@@ -39,30 +39,52 @@ THRESHOLDS_3BIT: list[float] = [
 ]
 
 
+_HADAMARD_CACHE: dict[tuple[int, torch.device], torch.Tensor] = {}
+
+
+def get_hadamard_matrix(d: int, device: torch.device | str = "cpu") -> torch.Tensor:
+    """Return cached normalized Sylvester Hadamard matrix (1/sqrt(d)) * H_d in float32."""
+    if not isinstance(d, int) or isinstance(d, bool) or d <= 0 or (d & (d - 1)) != 0:
+        raise ValueError(f"Hadamard dimension must be a positive power of 2, got {d!r}")
+
+    dev = torch.device(device)
+    if dev.type == "cuda" and dev.index is None and torch.cuda.is_available():
+        dev = torch.device("cuda", torch.cuda.current_device())
+
+    key = (d, dev)
+    cached = _HADAMARD_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    with torch.inference_mode(False), torch.no_grad():
+        h = torch.ones((1, 1), dtype=torch.float32, device=dev)
+        size = 1
+        while size < d:
+            h = torch.cat(
+                [torch.cat([h, h], dim=1), torch.cat([h, -h], dim=1)],
+                dim=0,
+            )
+            size *= 2
+        h = (h * (1.0 / math.sqrt(d))).contiguous()
+
+    _HADAMARD_CACHE[key] = h
+    return h
+
+
 def fwht(x: torch.Tensor) -> torch.Tensor:
     """Fast Walsh-Hadamard Transform along the last dimension (must be power of 2).
 
-    Executes in O(d log2(d)) time using radix-2 butterfly operations in FP32
-    to prevent mantissa precision loss.
+    Computes the orthonormal Sylvester transform in FP32 via a cached Hadamard
+    matrix multiplication to avoid Python butterfly loop overhead.
     """
-    orig_shape = x.shape
-    d = orig_shape[-1]
-    if (d & (d - 1)) != 0:
-        raise ValueError(f"Last dimension must be a power of 2, got {d}")
+    if x.ndim < 1:
+        raise ValueError(f"Input tensor must have at least 1 dimension, got {x.ndim}D")
+    d = x.shape[-1]
+    if d <= 0 or (d & (d - 1)) != 0:
+        raise ValueError(f"Last dimension must be a positive power of 2, got {d}")
 
-    # Compute in float32 for numerical stability across butterfly stages
-    x_flat = x.reshape(-1, d).to(dtype=torch.float32)
-    h = 1
-    while h < d:
-        x_flat = x_flat.view(-1, d // (2 * h), 2, h)
-        x1 = x_flat[:, :, 0, :]
-        x2 = x_flat[:, :, 1, :]
-        x_flat = torch.cat([x1 + x2, x1 - x2], dim=2)
-        h *= 2
-
-    # Orthonormal scaling factor 1 / sqrt(d)
-    x_out = x_flat.view(orig_shape) * (1.0 / math.sqrt(d))
-    return x_out
+    h = get_hadamard_matrix(d, x.device)
+    return torch.matmul(x.to(dtype=torch.float32), h)
 
 
 def ifwht(x: torch.Tensor) -> torch.Tensor:
