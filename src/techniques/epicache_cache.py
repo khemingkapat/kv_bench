@@ -46,12 +46,23 @@ class EpiCacheLayer(DynamicLayer):
         total_layers: int = 36,
         episode_budget_tokens: int = 1024,
         layer_sensitivity_alpha: float = 2.0,
+        sink_tokens: int = 4,
+        recent_window: int = 512,
     ):
+        if int(episode_budget_tokens) <= 0:
+            raise ValueError(f"episode_budget_tokens must be positive, got {episode_budget_tokens}")
+        if int(sink_tokens) < 0:
+            raise ValueError(f"sink_tokens must be non-negative, got {sink_tokens}")
+        if int(recent_window) < 0:
+            raise ValueError(f"recent_window must be non-negative, got {recent_window}")
+
         super().__init__()
         self.layer_idx = int(layer_idx)
         self.total_layers = int(total_layers)
         self.episode_budget_tokens = int(episode_budget_tokens)
         self.layer_sensitivity_alpha = float(layer_sensitivity_alpha)
+        self.sink_tokens = int(sink_tokens)
+        self.recent_window = int(recent_window)
 
         budgets = compute_layer_sensitivity_budgets(
             total_layers=self.total_layers,
@@ -65,8 +76,14 @@ class EpiCacheLayer(DynamicLayer):
         # so multi-chunk prefill (q_len > 1) never hits cross-layer mask dimension mismatches.
         self.layer_budget: int = self.episode_budget_tokens
 
-        self.original_positions: list[int] = []
+        self._original_positions: torch.Tensor | None = None
         self.total_tokens_seen: int = 0
+
+    @property
+    def original_positions(self) -> list[int]:
+        if self._original_positions is None:
+            return []
+        return self._original_positions.tolist()
 
     def update(
         self,
@@ -83,9 +100,16 @@ class EpiCacheLayer(DynamicLayer):
         self.values = torch.cat([self.values, value_states], dim=-2)
 
         new_tokens = key_states.shape[-2]
-        self.original_positions.extend(
-            range(self.total_tokens_seen, self.total_tokens_seen + new_tokens)
+        new_pos = torch.arange(
+            self.total_tokens_seen,
+            self.total_tokens_seen + new_tokens,
+            dtype=torch.int32,
+            device=key_states.device,
         )
+        if self._original_positions is None:
+            self._original_positions = new_pos
+        else:
+            self._original_positions = torch.cat([self._original_positions, new_pos], dim=0)
         self.total_tokens_seen += new_tokens
 
         if new_tokens == 1 and self.keys.shape[-2] > self.layer_budget:
@@ -94,22 +118,21 @@ class EpiCacheLayer(DynamicLayer):
         return self.keys, self.values
 
     def prune(self) -> None:
-        """Prune retained block buffer to budget, preserving token 0 sink & salient keys."""
+        """Prune retained block buffer to budget, preserving sink, recent window, and salient keys."""
         if self.is_initialized and self.keys is not None and self.values is not None:
             seq_len = self.keys.shape[-2]
             if seq_len > self.layer_budget:
                 k_ret, v_ret, retained_idx = evict_block_prefill(
-                    self.keys, self.values, budget=self.layer_budget
+                    self.keys,
+                    self.values,
+                    budget=self.layer_budget,
+                    sink_tokens=self.sink_tokens,
+                    recent_window=self.recent_window,
                 )
                 self.keys = k_ret
                 self.values = v_ret
-                if self.original_positions:
-                    idx_list = retained_idx.tolist()
-                    self.original_positions = [
-                        self.original_positions[i]
-                        for i in idx_list
-                        if i < len(self.original_positions)
-                    ]
+                if self._original_positions is not None:
+                    self._original_positions = self._original_positions[retained_idx]
 
     def get_seq_length(self) -> int:
         return self.keys.shape[-2] if (self.is_initialized and self.keys is not None) else 0
@@ -119,7 +142,7 @@ class EpiCacheLayer(DynamicLayer):
 
     def reset(self) -> None:
         self.total_tokens_seen = 0
-        self.original_positions = []
+        self._original_positions = None
         super().reset()
 
 
@@ -133,10 +156,21 @@ class EpiCacheCache(Cache):
         total_layers: int = 36,
         episode_budget_tokens: int = 1024,
         layer_sensitivity_alpha: float = 2.0,
+        sink_tokens: int = 4,
+        recent_window: int = 512,
     ):
+        if int(episode_budget_tokens) <= 0:
+            raise ValueError(f"episode_budget_tokens must be positive, got {episode_budget_tokens}")
+        if int(sink_tokens) < 0:
+            raise ValueError(f"sink_tokens must be non-negative, got {sink_tokens}")
+        if int(recent_window) < 0:
+            raise ValueError(f"recent_window must be non-negative, got {recent_window}")
+
         self.total_layers = int(total_layers)
         self.episode_budget_tokens = int(episode_budget_tokens)
         self.layer_sensitivity_alpha = float(layer_sensitivity_alpha)
+        self.sink_tokens = int(sink_tokens)
+        self.recent_window = int(recent_window)
 
         super().__init__(
             layer_class_to_replicate=lambda: EpiCacheLayer(
@@ -144,6 +178,8 @@ class EpiCacheCache(Cache):
                 total_layers=self.total_layers,
                 episode_budget_tokens=self.episode_budget_tokens,
                 layer_sensitivity_alpha=self.layer_sensitivity_alpha,
+                sink_tokens=self.sink_tokens,
+                recent_window=self.recent_window,
             )
         )
         set_active_epicache_cache(self)

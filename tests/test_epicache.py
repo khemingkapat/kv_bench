@@ -1,5 +1,8 @@
+import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -35,12 +38,22 @@ class TestEpiCacheTechnique(unittest.TestCase):
         self.assertEqual(technique.episode_budget_tokens, 1024)
         self.assertEqual(technique.layer_sensitivity_alpha, 2.0)
         self.assertEqual(technique.block_size, 16)
+        self.assertEqual(technique.sink_tokens, 4)
+        self.assertEqual(technique.recent_window, 512)
 
-        mock_out = SimpleNamespace(prompt_tokens=4096, generated_tokens=64)
-        metrics = technique.extra_metrics(None, mock_out)
+        metrics = technique.extra_metrics(None, None)
         self.assertEqual(metrics["num_episodes"], 4)
         self.assertTrue(metrics["block_wise_prefill_active"])
-        self.assertTrue(metrics["episodic_routing_active"])
+        self.assertIs(metrics["episodic_routing_active"], False)
+        self.assertEqual(metrics["sink_tokens"], 4)
+        self.assertEqual(metrics["recent_window"], 512)
+
+        custom = EpiCacheTechnique(sink_tokens=8, recent_window=128)
+        self.assertEqual(custom.sink_tokens, 8)
+        self.assertEqual(custom.recent_window, 128)
+        custom_cache = custom.pytorch_cache_factory()()
+        self.assertEqual(custom_cache.sink_tokens, 8)
+        self.assertEqual(custom_cache.recent_window, 128)
 
         kwargs = technique.engine_kwargs(context_length=8192, max_tokens=128)
         self.assertEqual(kwargs["block_size"], 16)
@@ -55,6 +68,34 @@ class TestEpiCacheTechnique(unittest.TestCase):
             EpiCacheTechnique(layer_sensitivity_alpha=0.0)
         with self.assertRaises(ValueError):
             EpiCacheTechnique(block_size=0)
+        with self.assertRaises(ValueError):
+            EpiCacheTechnique(sink_tokens=-1)
+        with self.assertRaises(ValueError):
+            EpiCacheTechnique(recent_window=-1)
+
+        k = torch.randn(1, 2, 8, 16)
+        v = torch.randn(1, 2, 8, 16)
+        for bad_budget in (0, -4):
+            with self.assertRaises(ValueError):
+                evict_block_prefill(k, v, budget=bad_budget)
+            with self.assertRaises(ValueError):
+                EpiCacheCache(total_layers=2, episode_budget_tokens=bad_budget)
+            with self.assertRaises(ValueError):
+                EpiCacheLayer(layer_idx=0, total_layers=2, episode_budget_tokens=bad_budget)
+
+        for bad_arg in (-1,):
+            with self.assertRaises(ValueError):
+                evict_block_prefill(k, v, budget=4, sink_tokens=bad_arg)
+            with self.assertRaises(ValueError):
+                evict_block_prefill(k, v, budget=4, recent_window=bad_arg)
+            with self.assertRaises(ValueError):
+                EpiCacheCache(total_layers=2, episode_budget_tokens=4, sink_tokens=bad_arg)
+            with self.assertRaises(ValueError):
+                EpiCacheCache(total_layers=2, episode_budget_tokens=4, recent_window=bad_arg)
+            with self.assertRaises(ValueError):
+                EpiCacheLayer(layer_idx=0, total_layers=2, episode_budget_tokens=4, sink_tokens=bad_arg)
+            with self.assertRaises(ValueError):
+                EpiCacheLayer(layer_idx=0, total_layers=2, episode_budget_tokens=4, recent_window=bad_arg)
 
     def test_layer_sensitivity_budgets(self):
         budgets = compute_layer_sensitivity_budgets(total_layers=16, base_budget_per_layer=512, alpha=2.0)
@@ -200,6 +241,158 @@ class TestEpiCacheTechnique(unittest.TestCase):
             self.assertEqual(cache.get_seq_length(0), 128)
             self.assertEqual(len(cache.original_positions), 128)
             self.assertEqual(out3.logits.shape, (1, 1, 256))
+
+    def test_adversarial_l2_norm_sink_and_recent_pinning_prefill_and_decode(self):
+        batch, heads, dim = 1, 2, 16
+        seq_len = 40
+        budget = 16
+        sink_tokens = 4
+        recent_window = 4
+        target_middle = [10, 11, 12, 13, 20, 21, 22, 23]
+
+        def make_normed_keys(norms: list[float]) -> torch.Tensor:
+            k_tensor = torch.zeros(batch, heads, len(norms), dim, dtype=torch.float32)
+            for idx, val in enumerate(norms):
+                k_tensor[:, :, idx, 0] = val
+            return k_tensor
+
+        norms = [100.0] * seq_len
+        for i in range(sink_tokens):
+            norms[i] = 0.01
+        for i in range(seq_len - recent_window, seq_len):
+            norms[i] = 0.01
+        for i in target_middle:
+            norms[i] = 1000.0
+
+        k = make_normed_keys(norms)
+        v = torch.randn(batch, heads, seq_len, dim, dtype=torch.float32)
+
+        k_ret, v_ret, indices = evict_block_prefill(
+            k, v, budget=budget, sink_tokens=sink_tokens, recent_window=recent_window
+        )
+        self.assertEqual(k_ret.shape[-2], budget)
+        self.assertEqual(v_ret.shape[-2], budget)
+        expected_indices = sorted([0, 1, 2, 3] + target_middle + [36, 37, 38, 39])
+        self.assertEqual(indices.tolist(), expected_indices)
+
+        # EpiCacheCache prefill + decode with adversarial L2 norms
+        cache = EpiCacheCache(
+            total_layers=2,
+            episode_budget_tokens=budget,
+            sink_tokens=sink_tokens,
+            recent_window=recent_window,
+        )
+        prefill_len = 32
+        prefill_norms = [100.0] * prefill_len
+        for i in range(4):
+            prefill_norms[i] = 0.01
+        for i in range(28, 32):
+            prefill_norms[i] = 0.01
+        cache_targets = list(range(8, 16))
+        for i in cache_targets:
+            prefill_norms[i] = 1000.0
+
+        k_prefill = make_normed_keys(prefill_norms)
+        v_prefill = torch.randn(batch, heads, prefill_len, dim, dtype=torch.float32)
+        cache.update(k_prefill, v_prefill, layer_idx=0)
+        cache.prune_after_chunk()
+
+        self.assertEqual(cache.get_seq_length(0), budget)
+        self.assertEqual(cache.original_positions, sorted([0, 1, 2, 3] + cache_targets + [28, 29, 30, 31]))
+
+        # Decode 2 tiny-norm tokens; both must remain pinned in recent_window along with sinks & target middle
+        for _ in range(2):
+            k_dec = make_normed_keys([0.01])
+            v_dec = torch.randn(batch, heads, 1, dim, dtype=torch.float32)
+            out_k, _ = cache.update(k_dec, v_dec, layer_idx=0)
+            self.assertEqual(out_k.shape[-2], budget)
+
+        retained_pos = cache.original_positions
+        self.assertEqual(len(retained_pos), budget)
+        for p in [0, 1, 2, 3] + cache_targets + [32, 33]:
+            self.assertIn(p, retained_pos)
+
+    def test_clamping_and_zero_recent_window_edge_cases(self):
+        k = torch.zeros(1, 2, 16, 8, dtype=torch.float32)
+        v = torch.randn(1, 2, 16, 8, dtype=torch.float32)
+        k[:, :, :, 0] = 10.0
+
+        # Small budget < sink_tokens + recent_window clamps to [0, 1]
+        k_ret, v_ret, idx = evict_block_prefill(k, v, budget=2, sink_tokens=4, recent_window=512)
+        self.assertEqual(k_ret.shape[-2], 2)
+        self.assertEqual(v_ret.shape[-2], 2)
+        self.assertEqual(idx.tolist(), [0, 1])
+
+        # recent_window=0 must not trigger -0: slice corruption
+        norms = [100.0] * 20
+        for i in range(4):
+            norms[i] = 0.01
+        for i in range(16, 20):
+            norms[i] = 0.01
+        for i in (6, 7, 8, 9):
+            norms[i] = 1000.0
+        k20 = torch.zeros(1, 2, 20, 8, dtype=torch.float32)
+        for i, val in enumerate(norms):
+            k20[:, :, i, 0] = val
+        v20 = torch.randn(1, 2, 20, 8, dtype=torch.float32)
+
+        k20_ret, v20_ret, idx20 = evict_block_prefill(k20, v20, budget=8, sink_tokens=4, recent_window=0)
+        self.assertEqual(k20_ret.shape[-2], 8)
+        self.assertEqual(v20_ret.shape[-2], 8)
+        self.assertEqual(idx20.tolist(), [0, 1, 2, 3, 6, 7, 8, 9])
+
+    def test_gpu_original_positions_zero_sync_and_reset(self):
+        layer = EpiCacheLayer(
+            layer_idx=0, total_layers=2, episode_budget_tokens=8, sink_tokens=2, recent_window=2
+        )
+        k1 = torch.randn(1, 2, 6, 16, dtype=torch.float32)
+        v1 = torch.randn(1, 2, 6, 16, dtype=torch.float32)
+        k2 = torch.randn(1, 2, 6, 16, dtype=torch.float32)
+        v2 = torch.randn(1, 2, 6, 16, dtype=torch.float32)
+
+        with patch.object(torch.Tensor, "tolist", wraps=torch.Tensor.tolist) as mock_tolist:
+            layer.update(k1, v1)
+            layer.update(k2, v2)
+            layer.prune()
+            self.assertEqual(mock_tolist.call_count, 0)
+
+        self.assertIsInstance(layer._original_positions, torch.Tensor)
+        self.assertEqual(layer._original_positions.dtype, torch.int32)
+        self.assertEqual(layer._original_positions.device, k1.device)
+        self.assertEqual(layer._original_positions.numel(), 8)
+
+        positions = layer.original_positions
+        self.assertIsInstance(positions, list)
+        self.assertTrue(all(isinstance(p, int) for p in positions))
+        self.assertEqual(len(positions), 8)
+
+        # Verify diagnostic integration matches layer.original_positions retention ratio
+        cache = EpiCacheCache(total_layers=1, episode_budget_tokens=8, sink_tokens=2, recent_window=2)
+        cache.update(torch.cat([k1, k2], dim=-2), torch.cat([v1, v2], dim=-2), layer_idx=0)
+        cache.prune_after_chunk()
+        diag = inspect_sample_diagnostic(
+            cache=cache,
+            prompt_text="Zero sync diag",
+            prompt_token_ids=list(range(12)),
+            sample_meta={"id": "zero_sync_0", "task_type": "unit"},
+            is_correct=True,
+            baseline_correct=True,
+            bits_per_scalar=16.0,
+        )
+        self.assertAlmostEqual(diag.overall_retention_ratio, len(positions) / 12, places=3)
+
+        layer.reset()
+        self.assertIsNone(layer._original_positions)
+        self.assertEqual(layer.original_positions, [])
+
+    def test_fix_epicache_suite_config(self):
+        suites_path = Path("src/config/suites.json")
+        suites = json.loads(suites_path.read_text(encoding="utf-8"))
+        self.assertIn("fix_epicache", suites)
+        cfg = suites["fix_epicache"]
+        self.assertEqual(cfg["techniques"], ["epicache"])
+        self.assertIs(cfg["force_longmem_ref"], False)
+        self.assertIs(cfg["skip_existing"], False)
 
 
 if __name__ == "__main__":
