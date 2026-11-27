@@ -12,7 +12,7 @@ except ImportError:
 from transformers.cache_utils import Cache, DynamicLayer
 from src.techniques.headq import (
     compute_key_sidecode,
-    compute_query_pca_basis,
+    compute_per_head_query_pca_basis,
     dequantize_key_2bit,
     dequantize_key_sidecode,
     dequantize_value_4bit,
@@ -53,11 +53,15 @@ class HeadQLayer(DynamicLayer):
         self.sidecode_bits = int(sidecode_bits)
         self.capacity: int = 0
         self.total_tokens_seen: int = 0
+        self.num_kv: int = 0
         self.head_dim: int = 0
         self.target_dtype: Any = None
         self.target_device: Any = None
 
         self.basis: torch.Tensor | None = None
+        self.k_mean: torch.Tensor | None = None
+        self.k_std: torch.Tensor | None = None
+        self._pending_chunk0_residual: torch.Tensor | None = None
         self.k_packed_buf: torch.Tensor | None = None
         self.k_scales_buf: torch.Tensor | None = None
         self.z_packed_buf: torch.Tensor | None = None
@@ -78,13 +82,7 @@ class HeadQLayer(DynamicLayer):
     def keys(self) -> torch.Tensor | None:
         if not self.is_initialized or self.total_tokens_seen == 0:
             return self._keys_fallback
-        assert (
-            self.k_packed_buf is not None
-            and self.k_scales_buf is not None
-            and self.z_packed_buf is not None
-            and self.z_scales_buf is not None
-            and self.basis is not None
-        )
+        assert self.k_packed_buf is not None and self.k_scales_buf is not None
         t = self.total_tokens_seen
         k_base = dequantize_key_2bit(
             self.k_packed_buf[:, :, :t, :],
@@ -92,14 +90,21 @@ class HeadQLayer(DynamicLayer):
             original_dim=self.head_dim,
             dtype=self.target_dtype,
         )
+        if self.k_std is not None and self.k_mean is not None:
+            k_base.mul_(self.k_std).add_(self.k_mean)
+
+        if self.basis is None:
+            return k_base
+
+        assert self.z_packed_buf is not None and self.z_scales_buf is not None
         z_recon = dequantize_key_sidecode(
             self.z_packed_buf[:, :, :t, :],
             self.z_scales_buf[:, :, :t, :],
             rank=self.rank,
             dtype=self.target_dtype,
         )
-        k_corr = torch.matmul(z_recon.float(), self.basis.float().transpose(0, 1)).to(self.target_dtype)
-        return (k_base + k_corr).to(self.target_dtype)
+        k_corr = torch.matmul(z_recon, self.basis.transpose(-2, -1))
+        return k_base.add_(k_corr)
 
     @keys.setter
     def keys(self, value: torch.Tensor | None) -> None:
@@ -139,10 +144,34 @@ class HeadQLayer(DynamicLayer):
         target_dtype: Any,
         required_capacity: int,
     ) -> None:
+        if self.k_packed_buf is not None:
+            existing_batch, existing_kv = self.k_packed_buf.shape[0], self.k_packed_buf.shape[1]
+            if (
+                batch_size != existing_batch
+                or num_kv != existing_kv
+                or head_dim != self.head_dim
+                or target_device != self.target_device
+                or target_dtype != self.target_dtype
+            ):
+                raise ValueError(
+                    "HeadQLayer shape/device/dtype mismatch without reset(): "
+                    f"expected ({existing_batch}, {existing_kv}, {self.head_dim}, "
+                    f"{self.target_device}, {self.target_dtype}), "
+                    f"got ({batch_size}, {num_kv}, {head_dim}, {target_device}, {target_dtype})"
+                )
+        else:
+            self.num_kv = num_kv
+            self.head_dim = head_dim
+            self.target_device = target_device
+            self.target_dtype = target_dtype
+
         if self.capacity >= required_capacity:
             return
 
-        new_capacity = max(required_capacity, self.capacity * 2, 1024)
+        if self.capacity >= 16384 or required_capacity > 16384:
+            new_capacity = max(required_capacity, self.capacity + 2048)
+        else:
+            new_capacity = max(required_capacity, self.capacity * 2, 1024)
 
         new_kp = torch.empty((batch_size, num_kv, new_capacity, head_dim // 4), dtype=torch.uint8, device=target_device)
         new_ks = torch.empty((batch_size, num_kv, new_capacity, 1), dtype=target_dtype, device=target_device)
@@ -168,6 +197,23 @@ class HeadQLayer(DynamicLayer):
         self.v_scales_buf = new_vs
         self.capacity = new_capacity
 
+    def finalize_chunk0_from_queries(self, query_states: torch.Tensor) -> None:
+        """Fit per-KV-head PCA basis from post-RoPE queries and materialize Chunk-0 sidecodes."""
+        if self._pending_chunk0_residual is None:
+            return
+        num_kv = self._pending_chunk0_residual.shape[1]
+        t0 = self._pending_chunk0_residual.shape[-2]
+        self.basis = compute_per_head_query_pca_basis(
+            query_states, num_kv_heads=num_kv, rank=self.rank
+        ).to(self.target_dtype)
+        z0_packed, z0_scales, _ = compute_key_sidecode(
+            self._pending_chunk0_residual, self.basis, sidecode_bits=self.sidecode_bits
+        )
+        assert self.z_packed_buf is not None and self.z_scales_buf is not None
+        self.z_packed_buf[:, :, :t0].copy_(z0_packed)
+        self.z_scales_buf[:, :, :t0].copy_(z0_scales.to(self.target_dtype))
+        self._pending_chunk0_residual = None
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -183,32 +229,44 @@ class HeadQLayer(DynamicLayer):
         new_tokens = key_states.shape[-2]
         head_dim = key_states.shape[-1]
 
-        self.target_dtype = key_states.dtype
-        self.target_device = key_states.device
-        self.head_dim = head_dim
-
-        k_packed, k_scales, k_dequant = quantize_key_2bit(key_states)
-        k_residual = key_states - k_dequant
-
-        if self.basis is None:
-            self.basis = compute_query_pca_basis(k_residual, rank=self.rank)
-
-        z_packed, z_scales, _ = compute_key_sidecode(
-            k_residual, self.basis, sidecode_bits=self.sidecode_bits
-        )
-        v_packed, v_scales, _ = quantize_value_4bit(value_states)
-
         curr = self.total_tokens_seen
         self._ensure_capacity(
             batch_size, num_kv, head_dim, key_states.device, key_states.dtype, curr + new_tokens
         )
 
+        if self.k_mean is None or self.k_std is None:
+            k_f = key_states.float()
+            mean_f = k_f.mean(dim=(0, 2), keepdim=True)
+            if batch_size * new_tokens == 1:
+                std_f = torch.ones_like(mean_f)
+            else:
+                std_f = k_f.std(dim=(0, 2), keepdim=True, unbiased=False).clamp(min=1e-3)
+            self.k_mean = mean_f.to(self.target_dtype)
+            self.k_std = std_f.to(self.target_dtype)
+
+        k_norm = (key_states - self.k_mean) / self.k_std
+        k_packed, k_scales, k_norm_dequant = quantize_key_2bit(k_norm)
+        k_base = k_norm_dequant * self.k_std + self.k_mean
+        k_residual = key_states - k_base
+
+        v_packed, v_scales, _ = quantize_value_4bit(value_states)
+
         self.k_packed_buf[:, :, curr : curr + new_tokens].copy_(k_packed)
         self.k_scales_buf[:, :, curr : curr + new_tokens].copy_(k_scales.to(key_states.dtype))
-        self.z_packed_buf[:, :, curr : curr + new_tokens].copy_(z_packed)
-        self.z_scales_buf[:, :, curr : curr + new_tokens].copy_(z_scales.to(key_states.dtype))
         self.v_packed_buf[:, :, curr : curr + new_tokens].copy_(v_packed)
         self.v_scales_buf[:, :, curr : curr + new_tokens].copy_(v_scales.to(value_states.dtype))
+
+        if curr == 0 and self.basis is None:
+            self._pending_chunk0_residual = k_residual
+        else:
+            if self.basis is None and self._pending_chunk0_residual is not None:
+                # Standalone fallback when no SDPA query hook fired on Chunk 0.
+                self.finalize_chunk0_from_queries(self._pending_chunk0_residual)
+            z_packed, z_scales, _ = compute_key_sidecode(
+                k_residual, self.basis, sidecode_bits=self.sidecode_bits
+            )
+            self.z_packed_buf[:, :, curr : curr + new_tokens].copy_(z_packed)
+            self.z_scales_buf[:, :, curr : curr + new_tokens].copy_(z_scales.to(key_states.dtype))
 
         self.total_tokens_seen += new_tokens
 
@@ -230,8 +288,12 @@ class HeadQLayer(DynamicLayer):
             self.v_packed_buf[:, :, :t],
             self.v_scales_buf[:, :, :t],
         ]
-        basis_bytes = self.basis.nelement() * self.basis.element_size() if self.basis is not None else 0
-        return basis_bytes + sum(x.nelement() * x.element_size() for x in tensors)
+        extra_bytes = sum(
+            x.nelement() * x.element_size()
+            for x in (self.basis, self.k_mean, self.k_std)
+            if x is not None
+        )
+        return extra_bytes + sum(x.nelement() * x.element_size() for x in tensors)
 
     def get_seq_length(self) -> int:
         return self.total_tokens_seen
@@ -241,7 +303,14 @@ class HeadQLayer(DynamicLayer):
 
     def reset(self) -> None:
         self.total_tokens_seen = 0
+        self.num_kv = 0
+        self.head_dim = 0
+        self.target_dtype = None
+        self.target_device = None
         self.basis = None
+        self.k_mean = None
+        self.k_std = None
+        self._pending_chunk0_residual = None
         self.k_packed_buf = None
         self.k_scales_buf = None
         self.z_packed_buf = None
