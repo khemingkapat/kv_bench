@@ -233,7 +233,7 @@ class InfiniGenLayer(DynamicLayer):
         self.gpu_values = value
 
     def _ensure_rotation_matrix(
-        self, head_dim: int, device: torch.device, dtype: torch.dtype
+        self, head_dim: int, device: torch.device, dtype: torch.dtype, key_states: torch.Tensor | None = None
     ) -> torch.Tensor:
         if (
             self.rotation_matrix is None
@@ -241,9 +241,17 @@ class InfiniGenLayer(DynamicLayer):
             or self.rotation_matrix.dtype != dtype
             or self.rotation_matrix.device != device
         ):
-            self.rotation_matrix = generate_orthogonal_matrix(head_dim).to(
-                device=device, dtype=dtype
-            )
+            rot: torch.Tensor | None = None
+            if key_states is not None and key_states.shape[-2] >= head_dim:
+                try:
+                    k_flat = key_states.reshape(-1, head_dim).float()
+                    _, _, vh = torch.linalg.svd(k_flat, full_matrices=False)
+                    rot = vh.transpose(0, 1).contiguous().to(device=device, dtype=dtype)
+                except Exception:
+                    rot = None
+            if rot is None:
+                rot = generate_orthogonal_matrix(head_dim).to(device=device, dtype=dtype)
+            self.rotation_matrix = rot
             self.d_proxy = max(1, int(head_dim * self.k_proxy_ratio))
         return self.rotation_matrix
 
@@ -259,53 +267,75 @@ class InfiniGenLayer(DynamicLayer):
         if self.capacity >= required_capacity:
             return
 
-        new_capacity = max(required_capacity, self.capacity * 2, 2048)
+        if required_capacity <= 16384:
+            new_capacity = max(required_capacity, self.capacity * 2, 2048)
+        else:
+            new_capacity = max(((required_capacity + 2047) // 2048) * 2048, self.capacity)
+
         pin = torch.cuda.is_available()
 
-        new_cpu_k = torch.empty(
-            (batch_size, num_kv, new_capacity, head_dim),
-            dtype=target_dtype,
-            device="cpu",
-            pin_memory=pin,
-        )
-        new_cpu_v = torch.empty(
-            (batch_size, num_kv, new_capacity, head_dim),
-            dtype=target_dtype,
-            device="cpu",
-            pin_memory=pin,
-        )
+        def _grow_cpu(old_buf: torch.Tensor | None, valid_len: int) -> torch.Tensor:
+            buf = torch.empty((batch_size, num_kv, new_capacity, head_dim), dtype=target_dtype, device="cpu", pin_memory=pin)
+            if old_buf is not None and valid_len > 0:
+                buf[:, :, :valid_len, :].copy_(old_buf[:, :, :valid_len, :])
+            return buf
 
-        staging_capacity = max(int(new_capacity * self.max_budget_ratio) + 2 * self.block_size, 2048)
-        staging_capacity = min(staging_capacity, new_capacity)
-        if getattr(self, "staging_cpu_k", None) is None or self.staging_cpu_k.shape[2] < staging_capacity:
-            self.staging_cpu_k = torch.empty(
-                (batch_size, num_kv, staging_capacity, head_dim),
-                dtype=target_dtype,
-                device="cpu",
-                pin_memory=pin,
-            )
-            self.staging_cpu_v = torch.empty(
-                (batch_size, num_kv, staging_capacity, head_dim),
-                dtype=target_dtype,
-                device="cpu",
-                pin_memory=pin,
-            )
+        t = self.total_tokens_seen
+        self.cpu_k_buf = _grow_cpu(self.cpu_k_buf, t)
+        self.cpu_v_buf = _grow_cpu(self.cpu_v_buf, t)
 
-        new_proxy_k = torch.empty(
-            (batch_size, num_kv, new_capacity, self.d_proxy),
-            dtype=target_dtype,
-            device=target_device,
-        )
+        if getattr(self, "staging_cpu_k", None) is None:
+            init_stage = min(new_capacity, 1024)
+            self.staging_cpu_k = torch.empty((batch_size, num_kv, init_stage, head_dim), dtype=target_dtype, device="cpu", pin_memory=pin)
+            self.staging_cpu_v = torch.empty((batch_size, num_kv, init_stage, head_dim), dtype=target_dtype, device="cpu", pin_memory=pin)
 
-        if self.total_tokens_seen > 0 and self.cpu_k_buf is not None and self.proxy_k_buf is not None:
-            new_cpu_k[:, :, : self.total_tokens_seen, :].copy_(self.cpu_k_buf[:, :, : self.total_tokens_seen, :])
-            new_cpu_v[:, :, : self.total_tokens_seen, :].copy_(self.cpu_v_buf[:, :, : self.total_tokens_seen, :])
-            new_proxy_k[:, :, : self.total_tokens_seen, :].copy_(self.proxy_k_buf[:, :, : self.total_tokens_seen, :])
-
-        self.cpu_k_buf = new_cpu_k
-        self.cpu_v_buf = new_cpu_v
+        new_proxy_k = torch.empty((batch_size, num_kv, new_capacity, self.d_proxy), dtype=target_dtype, device=target_device)
+        if t > 0 and self.proxy_k_buf is not None:
+            new_proxy_k[:, :, :t, :].copy_(self.proxy_k_buf[:, :, :t, :])
         self.proxy_k_buf = new_proxy_k
         self.capacity = new_capacity
+
+    def resolve_active_kv(self, query_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score GPU proxy keys with true query_states and gather only selected blocks from CPU."""
+        assert self.cpu_k_buf is not None and self.cpu_v_buf is not None and self.proxy_k_buf is not None
+        assert self.rotation_matrix is not None
+
+        target_device = query_states.device
+        q_rot = torch.matmul(query_states, self.rotation_matrix)
+        q_proxy = q_rot[..., : self.d_proxy]
+
+        active_proxy = self.proxy_k_buf[:, :, : self.total_tokens_seen, :]
+        _, prefetched_blocks, _ = compute_speculative_block_mask(
+            query=q_proxy,
+            proxy_keys=active_proxy,
+            alpha=self.alpha_threshold,
+            block_size=self.block_size,
+            max_budget_ratio=self.max_budget_ratio,
+        )
+
+        total_blocks = math.ceil(self.total_tokens_seen / self.block_size)
+        sink_block = 0
+        recent_block = total_blocks - 1
+        all_blocks_to_fetch = sorted(set(prefetched_blocks) | {sink_block, recent_block})
+
+        fetch_indices: list[int] = []
+        for b in all_blocks_to_fetch:
+            b_start = b * self.block_size
+            b_end = min(self.total_tokens_seen, (b + 1) * self.block_size)
+            fetch_indices.extend(range(b_start, b_end))
+
+        idx_cpu = torch.tensor(fetch_indices, dtype=torch.long)
+        k_fetched = torch.index_select(self.cpu_k_buf, dim=2, index=idx_cpu).to(target_device, non_blocking=True)
+        v_fetched = torch.index_select(self.cpu_v_buf, dim=2, index=idx_cpu).to(target_device, non_blocking=True)
+
+        bytes_in = (k_fetched.nelement() + v_fetched.nelement()) * k_fetched.element_size()
+        self.total_bytes_transferred_pcie += bytes_in
+        self.total_prefetched_blocks += len(all_blocks_to_fetch)
+        self.total_omitted_blocks += max(0, total_blocks - len(all_blocks_to_fetch))
+
+        self.gpu_keys = k_fetched
+        self.gpu_values = v_fetched
+        return k_fetched, v_fetched
 
     def update(
         self,
@@ -321,7 +351,7 @@ class InfiniGenLayer(DynamicLayer):
         target_device = key_states.device
         target_dtype = key_states.dtype
         head_dim = key_states.shape[-1]
-        rot_matrix = self._ensure_rotation_matrix(head_dim, target_device, target_dtype)
+        rot_matrix = self._ensure_rotation_matrix(head_dim, target_device, target_dtype, key_states=key_states)
 
         new_tokens = key_states.shape[-2]
         batch_size = key_states.shape[0]
@@ -330,97 +360,41 @@ class InfiniGenLayer(DynamicLayer):
         curr = self.total_tokens_seen
         self._ensure_capacity(batch_size, num_kv, head_dim, target_device, target_dtype, curr + new_tokens)
 
-        # SVD-rotated keys for proxy generation
+        # Rotated keys for proxy generation
         k_rotated = torch.matmul(key_states, rot_matrix)
         k_proxy_slice = k_rotated[..., : self.d_proxy]
 
-        # In-place write to GPU Proxy Keys (zero GPU allocation)
         assert self.proxy_k_buf is not None
         self.proxy_k_buf[:, :, curr : curr + new_tokens, :].copy_(k_proxy_slice)
 
-        # In-place zero-copy DMA to pinned Host CPU DRAM (zero CPU allocation)
+        # Write to pinned Host CPU DRAM
         assert self.cpu_k_buf is not None and self.cpu_v_buf is not None
         self.cpu_k_buf[:, :, curr : curr + new_tokens, :].copy_(key_states, non_blocking=True)
         self.cpu_v_buf[:, :, curr : curr + new_tokens, :].copy_(value_states, non_blocking=True)
 
         self.total_tokens_seen += new_tokens
 
-        # Track initial offload to CPU DRAM
         bytes_offload = (key_states.nelement() + value_states.nelement()) * key_states.element_size()
         self.total_bytes_transferred_pcie += bytes_offload
 
-        # Single-token decode step with historical context: run Speculative Prefetching
         if new_tokens == 1 and self.total_tokens_seen > self.block_size:
-            # Query proxy: rotated current query
-            q_rot = torch.matmul(key_states, rot_matrix)
-            q_proxy = q_rot[..., : self.d_proxy]
+            from src.techniques.infinigen import _ACTIVE_INFINIGEN_CONFIG
 
-            active_proxy = self.proxy_k_buf[:, :, : self.total_tokens_seen, :]
-            _, prefetched_blocks, _ = compute_speculative_block_mask(
-                query=q_proxy,
-                proxy_keys=active_proxy,
-                alpha=self.alpha_threshold,
-                block_size=self.block_size,
-                max_budget_ratio=self.max_budget_ratio,
-            )
+            if _ACTIVE_INFINIGEN_CONFIG.get("enabled", False):
+                # SDPA hook calls resolve_active_kv(real_query) immediately after update()
+                self.gpu_keys = None
+                self.gpu_values = None
+                return key_states, value_states
+            return self.resolve_active_kv(key_states)
 
-            # Ensure recent block and attention sink block are always retained
-            total_blocks = math.ceil(self.total_tokens_seen / self.block_size)
-            sink_block = 0
-            recent_block = total_blocks - 1
-            all_blocks_to_fetch = set(prefetched_blocks) | {sink_block, recent_block}
-
-            # Retrieve only scheduled blocks from CPU DRAM via pre-allocated pinned staging buffers
-            sorted_blocks = sorted(all_blocks_to_fetch)
-            total_fetch_len = sum(
-                min(self.total_tokens_seen, (b + 1) * self.block_size) - b * self.block_size
-                for b in sorted_blocks
-            )
-            if self.staging_cpu_k is None or self.staging_cpu_k.shape[2] < total_fetch_len:
-                pin = torch.cuda.is_available()
-                bs, nkv, _, hd = self.cpu_k_buf.shape
-                self.staging_cpu_k = torch.empty(
-                    (bs, nkv, max(total_fetch_len, 2048), hd),
-                    dtype=self.cpu_k_buf.dtype,
-                    device="cpu",
-                    pin_memory=pin,
-                )
-                self.staging_cpu_v = torch.empty(
-                    (bs, nkv, max(total_fetch_len, 2048), hd),
-                    dtype=self.cpu_v_buf.dtype,
-                    device="cpu",
-                    pin_memory=pin,
-                )
-
-            offset = 0
-            for b in sorted_blocks:
-                b_start = b * self.block_size
-                b_end = min(self.total_tokens_seen, (b + 1) * self.block_size)
-                blen = b_end - b_start
-                self.staging_cpu_k[:, :, offset : offset + blen, :].copy_(
-                    self.cpu_k_buf[:, :, b_start:b_end, :]
-                )
-                self.staging_cpu_v[:, :, offset : offset + blen, :].copy_(
-                    self.cpu_v_buf[:, :, b_start:b_end, :]
-                )
-                offset += blen
-
-            k_fetched = self.staging_cpu_k[:, :, :total_fetch_len, :].to(target_device, non_blocking=True)
-            v_fetched = self.staging_cpu_v[:, :, :total_fetch_len, :].to(target_device, non_blocking=True)
-
-            bytes_in = (k_fetched.nelement() + v_fetched.nelement()) * k_fetched.element_size()
-            self.total_bytes_transferred_pcie += bytes_in
-            self.total_prefetched_blocks += len(all_blocks_to_fetch)
-            self.total_omitted_blocks += max(0, total_blocks - len(all_blocks_to_fetch))
-
-            self.gpu_keys = k_fetched
-            self.gpu_values = v_fetched
-            return self.gpu_keys, self.gpu_values
-
-        # During prefill or small sequences, return full keys from CPU/GPU
-        self.gpu_keys = self.cpu_k_buf[:, :, : self.total_tokens_seen, :].to(target_device, non_blocking=True)
-        self.gpu_values = self.cpu_v_buf[:, :, : self.total_tokens_seen, :].to(target_device, non_blocking=True)
-        return self.gpu_keys, self.gpu_values
+        # Prefill or small sequences: return transient GPU view without pinning 32K tensors on self
+        self.gpu_keys = None
+        self.gpu_values = None
+        if curr == 0:
+            return key_states, value_states
+        k_out = self.cpu_k_buf[:, :, : self.total_tokens_seen, :].to(target_device, non_blocking=True)
+        v_out = self.cpu_v_buf[:, :, : self.total_tokens_seen, :].to(target_device, non_blocking=True)
+        return k_out, v_out
 
     def get_seq_length(self) -> int:
         return self.total_tokens_seen

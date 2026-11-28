@@ -198,54 +198,31 @@ class CacheGenLayer(DynamicLayer):
         if self.capacity >= required_capacity:
             return
 
-        if required_capacity <= 2048:
+        if required_capacity <= 16384:
             new_capacity = max(required_capacity, self.capacity * 2, 1024)
         else:
-            # Linear headroom past 2K avoids 16K->32K->64K doubling spikes under 16GB cap
-            new_capacity = max(required_capacity + 256, self.capacity)
+            # Linear +2048 headroom above 16K avoids 120x reallocations and 32K->64K doubling spikes
+            new_capacity = max(((required_capacity + 2047) // 2048) * 2048, self.capacity)
 
         new_group_cap = math.ceil(new_capacity / self.anchor_group_size)
         _, q_cols, q_dtype = self._packing_spec(head_dim)
 
-        saved_cpu = None
-        if self.total_tokens_seen > 0 and self.k_anchors_buf is not None:
-            t = self.total_tokens_seen
-            g_used = math.ceil(t / self.anchor_group_size)
-            saved_cpu = (
-                t,
-                g_used,
-                self.k_anchors_buf[:, :, :g_used].cpu(),
-                self.k_delta_q_buf[:, :, :t].cpu(),
-                self.k_delta_s_buf[:, :, :t].cpu(),
-                self.v_anchors_buf[:, :, :g_used].cpu(),
-                self.v_delta_q_buf[:, :, :t].cpu(),
-                self.v_delta_s_buf[:, :, :t].cpu(),
-            )
+        def _grow_buf(old_buf: torch.Tensor | None, new_shape: tuple[int, ...], dtype: Any, valid_len: int) -> torch.Tensor:
+            new_buf = torch.empty(new_shape, dtype=dtype, device=target_device)
+            if old_buf is not None and valid_len > 0:
+                new_buf[:, :, :valid_len].copy_(old_buf[:, :, :valid_len])
+            return new_buf
 
-        # Drop old GPU buffers before allocating larger ones to avoid 2x VRAM peak
-        self.k_anchors_buf = None
-        self.k_delta_q_buf = None
-        self.k_delta_s_buf = None
-        self.v_anchors_buf = None
-        self.v_delta_q_buf = None
-        self.v_delta_s_buf = None
+        t = self.total_tokens_seen
+        g_used = math.ceil(t / self.anchor_group_size) if t > 0 else 0
 
-        self.k_anchors_buf = torch.empty((batch_size, num_kv, new_group_cap, head_dim), dtype=target_dtype, device=target_device)
-        self.k_delta_q_buf = torch.empty((batch_size, num_kv, new_capacity, q_cols), dtype=q_dtype, device=target_device)
-        self.k_delta_s_buf = torch.empty((batch_size, num_kv, new_capacity, 1), dtype=target_dtype, device=target_device)
-
-        self.v_anchors_buf = torch.empty_like(self.k_anchors_buf)
-        self.v_delta_q_buf = torch.empty_like(self.k_delta_q_buf)
-        self.v_delta_s_buf = torch.empty_like(self.k_delta_s_buf)
-
-        if saved_cpu is not None:
-            t, g_used, ka, kdq, kds, va, vdq, vds = saved_cpu
-            self.k_anchors_buf[:, :, :g_used].copy_(ka, non_blocking=False)
-            self.k_delta_q_buf[:, :, :t].copy_(kdq, non_blocking=False)
-            self.k_delta_s_buf[:, :, :t].copy_(kds, non_blocking=False)
-            self.v_anchors_buf[:, :, :g_used].copy_(va, non_blocking=False)
-            self.v_delta_q_buf[:, :, :t].copy_(vdq, non_blocking=False)
-            self.v_delta_s_buf[:, :, :t].copy_(vds, non_blocking=False)
+        # Pure-GPU per-buffer grow-copy-replace (zero .cpu() DtoH/HtoD staging)
+        self.k_anchors_buf = _grow_buf(self.k_anchors_buf, (batch_size, num_kv, new_group_cap, head_dim), target_dtype, g_used)
+        self.k_delta_q_buf = _grow_buf(self.k_delta_q_buf, (batch_size, num_kv, new_capacity, q_cols), q_dtype, t)
+        self.k_delta_s_buf = _grow_buf(self.k_delta_s_buf, (batch_size, num_kv, new_capacity, 1), target_dtype, t)
+        self.v_anchors_buf = _grow_buf(self.v_anchors_buf, (batch_size, num_kv, new_group_cap, head_dim), target_dtype, g_used)
+        self.v_delta_q_buf = _grow_buf(self.v_delta_q_buf, (batch_size, num_kv, new_capacity, q_cols), q_dtype, t)
+        self.v_delta_s_buf = _grow_buf(self.v_delta_s_buf, (batch_size, num_kv, new_capacity, 1), target_dtype, t)
 
         self.capacity = new_capacity
         self.group_capacity = new_group_cap

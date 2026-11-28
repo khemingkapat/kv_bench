@@ -191,6 +191,61 @@ def _install_vllm_infinigen_hooks() -> None:
     _VLLM_HOOKS_INSTALLED = True
 
 
+def _install_pytorch_infinigen_hooks() -> None:
+    """Install attention wrapper into transformers ALL_ATTENTION_FUNCTIONS for InfiniGen."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        from src.techniques.infinigen_cache import get_active_infinigen_cache
+    except ImportError:
+        return
+
+    current = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+    if current is None:
+        return
+    if getattr(current, "_is_infinigen_sdpa_wrapper", False):
+        _PYTORCH_HOOKS_INSTALLED = True
+        return
+
+    _ORIG_SDPA = current
+
+    def infinigen_sdpa_attention_forward(module, query, key, value, attention_mask=None, *args, **kwargs):
+        cache = get_active_infinigen_cache()
+        if cache is not None and getattr(cache, "is_infinigen", False):
+            layer_idx = getattr(module, "layer_idx", None)
+            if layer_idx is not None and layer_idx < len(cache.layers):
+                layer = cache.layers[layer_idx]
+                if query.shape[-2] == 1 and getattr(layer, "total_tokens_seen", 0) > getattr(layer, "block_size", 16):
+                    if key.device == query.device:
+                        key, value = layer.resolve_active_kv(query)
+                        attention_mask = None
+                        if "is_causal" in kwargs:
+                            kwargs["is_causal"] = False
+
+        return _ORIG_SDPA(module, query, key, value, attention_mask, *args, **kwargs)
+
+    infinigen_sdpa_attention_forward._is_infinigen_sdpa_wrapper = True  # type: ignore[attr-defined]
+    ALL_ATTENTION_FUNCTIONS.register("sdpa", infinigen_sdpa_attention_forward)
+    _PYTORCH_HOOKS_INSTALLED = True
+
+
+def _uninstall_pytorch_infinigen_hooks() -> None:
+    """Restore original sdpa attention forward in transformers ALL_ATTENTION_FUNCTIONS."""
+    global _PYTORCH_HOOKS_INSTALLED, _ORIG_SDPA
+    if not _PYTORCH_HOOKS_INSTALLED or _ORIG_SDPA is None:
+        return
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        current = ALL_ATTENTION_FUNCTIONS.get_interface("sdpa", None)
+        if getattr(current, "_is_infinigen_sdpa_wrapper", False):
+            ALL_ATTENTION_FUNCTIONS.register("sdpa", _ORIG_SDPA)
+        _PYTORCH_HOOKS_INSTALLED = False
+        _ORIG_SDPA = None
+    except ImportError:
+        pass
+
+
 
 @register("infinigen")
 class InfiniGenTechnique(Technique):
@@ -247,6 +302,9 @@ class InfiniGenTechnique(Technique):
         )
 
     def setup(self) -> None:
+        from src.techniques.infinigen_cache import set_active_infinigen_cache
+
+        set_active_infinigen_cache(None)
         self._sample_count = 0
         self._accum_pcie_bytes = 0
         _ACTIVE_INFINIGEN_CONFIG.update(
@@ -261,6 +319,14 @@ class InfiniGenTechnique(Technique):
             }
         )
         _install_vllm_infinigen_hooks()
+        _install_pytorch_infinigen_hooks()
+
+    def teardown(self) -> None:
+        from src.techniques.infinigen_cache import set_active_infinigen_cache
+
+        _ACTIVE_INFINIGEN_CONFIG["enabled"] = False
+        set_active_infinigen_cache(None)
+        _uninstall_pytorch_infinigen_hooks()
 
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         del context_length, max_tokens

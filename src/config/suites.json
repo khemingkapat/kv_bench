@@ -21,6 +21,18 @@
       32768
     ]
   },
+  "wp3_final_3_fixes": {
+    "techniques": ["infinigen", "cachegen", "h2o"],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
+    "eval_contexts": [32768],
+    "niah_contexts": [2048, 4096]
+  },
   "wp3_fixed": {
     "techniques": [
       "qserve_kv4",

@@ -162,6 +162,23 @@ class TestCacheGenTechnique(unittest.TestCase):
         self.assertEqual(len(outputs), 1)
         self.assertEqual(len(outputs[0].outputs[0].token_ids), 16)
 
+    def test_cachegen_pure_gpu_linear_capacity_growth(self):
+        layer = CacheGenLayer(layer_idx=10, total_layers=36, anchor_group_size=10)
+        k1 = torch.randn(1, 4, 32, 64, dtype=torch.bfloat16)
+        v1 = torch.randn(1, 4, 32, 64, dtype=torch.bfloat16)
+        layer.update(k1, v1)
+        self.assertEqual(layer.capacity, 1024)
+
+        layer._ensure_capacity(1, 4, 64, torch.device("cpu"), torch.bfloat16, 16384)
+        self.assertEqual(layer.capacity, 16384)
+        layer._ensure_capacity(1, 4, 64, torch.device("cpu"), torch.bfloat16, 16385)
+        self.assertEqual(layer.capacity, 18432)
+
+        k2 = torch.randn(1, 4, 1, 64, dtype=torch.bfloat16)
+        v2 = torch.randn(1, 4, 1, 64, dtype=torch.bfloat16)
+        out_k, _ = layer.update(k2, v2)
+        self.assertEqual(out_k.shape[-2], 33)
+
 
 if __name__ == "__main__":
     unittest.main()

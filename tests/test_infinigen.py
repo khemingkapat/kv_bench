@@ -212,6 +212,36 @@ class TestInfiniGenTechnique(unittest.TestCase):
         self.assertEqual(len(outputs), 1)
         self.assertEqual(len(outputs[0].outputs[0].token_ids), 16)
 
+    def test_infinigen_sdpa_hook_and_linear_capacity(self):
+        tech = get_technique("infinigen", k_proxy_ratio=0.30, block_size=16)
+        tech.setup()
+        try:
+            cache = tech.pytorch_cache_factory()()
+            k_pre = torch.randn(1, 2, 160, 128, dtype=torch.bfloat16)
+            v_pre = torch.randn(1, 2, 160, 128, dtype=torch.bfloat16)
+            cache.update(k_pre, v_pre, layer_idx=0)
+            layer = cache.layers[0]
+            self.assertIsNone(layer.gpu_keys)
+
+            # Decode step with hook active defers resolution to resolve_active_kv(real_query)
+            k_dec = torch.randn(1, 2, 1, 128, dtype=torch.bfloat16)
+            v_dec = torch.randn(1, 2, 1, 128, dtype=torch.bfloat16)
+            cache.update(k_dec, v_dec, layer_idx=0)
+            self.assertIsNone(layer.gpu_keys)
+
+            q_real = torch.randn(1, 8, 1, 128, dtype=torch.bfloat16)
+            k_act, v_act = layer.resolve_active_kv(q_real)
+            self.assertEqual(k_act.shape[-2], v_act.shape[-2])
+            self.assertGreater(k_act.shape[-2], 0)
+
+            # Linear +2048 growth above 16384 (no 32K->64K doubling)
+            layer._ensure_capacity(1, 2, 128, torch.device("cpu"), torch.bfloat16, 16384)
+            self.assertEqual(layer.capacity, 16384)
+            layer._ensure_capacity(1, 2, 128, torch.device("cpu"), torch.bfloat16, 16385)
+            self.assertEqual(layer.capacity, 18432)
+        finally:
+            tech.teardown()
+
 
 if __name__ == "__main__":
     unittest.main()
