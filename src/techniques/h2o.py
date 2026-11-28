@@ -157,6 +157,42 @@ def compute_h2o_boundaries(
     )
 
 
+def compute_h2o_retained_indices_gpu(
+    seq_len: int,
+    cumulative_scores: "torch.Tensor | None",
+    heavy_hitter_tokens: int = 1024,
+    recent_window_tokens: int = 1024,
+    device: "torch.device | str" = "cpu",
+) -> "torch.Tensor":
+    """Compute sorted retained token indices purely on GPU with zero .tolist() D2H sync."""
+    if torch is None:
+        raise RuntimeError("PyTorch is required for compute_h2o_retained_indices_gpu")
+
+    total_budget = heavy_hitter_tokens + recent_window_tokens
+    if seq_len <= total_budget:
+        return torch.arange(seq_len, device=device, dtype=torch.long)
+
+    recent_start = seq_len - recent_window_tokens
+    recent_idx = torch.arange(recent_start, seq_len, device=device, dtype=torch.long)
+
+    if heavy_hitter_tokens == 0 or recent_start == 0:
+        return recent_idx
+
+    k = min(heavy_hitter_tokens, recent_start)
+    if cumulative_scores is None:
+        hh_idx = torch.arange(k, device=device, dtype=torch.long)
+    else:
+        scores_tensor = cumulative_scores
+        if scores_tensor.ndim > 1:
+            dim_to_reduce = tuple(range(scores_tensor.ndim - 1))
+            scores_tensor = scores_tensor.mean(dim=dim_to_reduce)
+        cand_scores = scores_tensor[:recent_start]
+        _, top_k_pos = torch.topk(cand_scores, k=k, largest=True, sorted=False)
+        hh_idx = torch.sort(top_k_pos).values.to(dtype=torch.long)
+
+    return torch.cat([hh_idx, recent_idx], dim=0)
+
+
 def compute_h2o_paged_block_boundaries(
     num_computed_tokens: int,
     heavy_hitter_tokens: int = 1024,

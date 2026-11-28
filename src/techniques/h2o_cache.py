@@ -12,7 +12,7 @@ except ImportError:
     F = None  # type: ignore[assignment]
 
 from transformers.cache_utils import Cache, DynamicLayer
-from src.techniques.h2o import compute_h2o_boundaries, evict_h2o_kv_cache
+from src.techniques.h2o import compute_h2o_retained_indices_gpu, evict_h2o_kv_cache
 
 _ACTIVE_H2O_CACHE_REF: weakref.ReferenceType[H2OCache] | None = None
 
@@ -59,23 +59,23 @@ def record_h2o_attention_scores(
     group_size = num_q_heads // num_kv_heads
 
     if q_len == 1:
-        # Fast decode path: vector-matrix dot-product (< 5 us, minimal memory)
+        # Fast decode path: vector-matrix dot-product in native dtype, softmax in fp32
         q_grouped = query.view(batch, num_kv_heads, group_size, 1, head_dim)
         k_expanded = key.unsqueeze(2)  # (batch, num_kv_heads, 1, kv_len, head_dim)
-        scores = (q_grouped.float() * k_expanded.float()).sum(dim=-1) * (head_dim ** -0.5)
-        attn = F.softmax(scores, dim=-1)
+        scores = (q_grouped * k_expanded).sum(dim=-1) * (head_dim ** -0.5)
+        attn = F.softmax(scores, dim=-1, dtype=torch.float32)
         step_scores = attn.mean(dim=2).squeeze(2)  # (batch, num_kv_heads, kv_len)
         layer.record_scores(step_scores)
     else:
-        # Chunked prefill path: causal chunk attention matrix
+        # Chunked prefill path: native-dtype causal chunk matmul avoids +1 GiB fp32 score buffer
         k_rep = key.repeat_interleave(group_size, dim=1)
-        scores = torch.matmul(query.float(), k_rep.float().transpose(-2, -1)) * (head_dim ** -0.5)
+        scores = torch.matmul(query, k_rep.transpose(-2, -1)) * (head_dim ** -0.5)
         past_len = kv_len - q_len
         q_idx = torch.arange(q_len, device=query.device).unsqueeze(-1) + past_len
         kv_idx = torch.arange(kv_len, device=query.device).unsqueeze(0)
         mask = kv_idx <= q_idx
         scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores, dim=-1, dtype=torch.float32)
         attn_grouped = attn.view(batch, num_kv_heads, group_size, q_len, kv_len)
         chunk_scores = attn_grouped.mean(dim=2).sum(dim=2)  # (batch, num_kv_heads, kv_len)
         layer.record_scores(chunk_scores)
@@ -96,8 +96,14 @@ class H2OLayer(DynamicLayer):
         self.heavy_hitter_tokens = int(heavy_hitter_tokens)
         self.recent_window_tokens = int(recent_window_tokens)
         self.cumulative_scores: torch.Tensor | None = None
-        self.original_positions: list[int] = []
+        self._original_positions: torch.Tensor | None = None
         self.total_tokens_seen: int = 0
+
+    @property
+    def original_positions(self) -> list[int]:
+        if self._original_positions is None:
+            return []
+        return self._original_positions.tolist()
 
     def update(
         self, key_states: torch.Tensor, value_states: torch.Tensor, *args: Any, **kwargs: Any
@@ -110,7 +116,16 @@ class H2OLayer(DynamicLayer):
         self.values = torch.cat([self.values, value_states], dim=-2)
 
         new_tokens = key_states.shape[-2]
-        self.original_positions.extend(range(self.total_tokens_seen, self.total_tokens_seen + new_tokens))
+        new_pos = torch.arange(
+            self.total_tokens_seen,
+            self.total_tokens_seen + new_tokens,
+            device=key_states.device,
+            dtype=torch.int32,
+        )
+        if self._original_positions is None:
+            self._original_positions = new_pos
+        else:
+            self._original_positions = torch.cat([self._original_positions, new_pos], dim=0)
         self.total_tokens_seen += new_tokens
         batch = key_states.shape[0]
         num_kv_heads = key_states.shape[1]
@@ -145,31 +160,33 @@ class H2OLayer(DynamicLayer):
             seq_len = self.keys.shape[-2]
             capacity = self.heavy_hitter_tokens + self.recent_window_tokens
             if seq_len > capacity:
-                boundary = compute_h2o_boundaries(
+                idx_tensor = compute_h2o_retained_indices_gpu(
                     seq_len=seq_len,
                     cumulative_scores=self.cumulative_scores,
                     heavy_hitter_tokens=self.heavy_hitter_tokens,
                     recent_window_tokens=self.recent_window_tokens,
+                    device=self.keys.device,
                 )
                 self.keys, self.values = evict_h2o_kv_cache(
                     self.keys,
                     self.values,
-                    retained_indices=boundary.retained_indices,
+                    retained_indices=idx_tensor,
                     seq_dim=-2,
                 )
-                if self.original_positions and len(self.original_positions) >= len(boundary.retained_indices):
-                    self.original_positions = [
-                        self.original_positions[i]
-                        for i in boundary.retained_indices
-                        if i < len(self.original_positions)
-                    ]
-                if self.cumulative_scores is not None:
-                    idx_tensor = torch.tensor(
-                        boundary.retained_indices, device=self.cumulative_scores.device, dtype=torch.long
+                if self._original_positions is not None and self._original_positions.numel() >= idx_tensor.numel():
+                    self._original_positions = torch.index_select(
+                        self._original_positions, dim=0, index=idx_tensor
                     )
+                if self.cumulative_scores is not None:
                     self.cumulative_scores = torch.index_select(
                         self.cumulative_scores, dim=-1, index=idx_tensor
                     )
+
+    def reset(self) -> None:
+        self.cumulative_scores = None
+        self._original_positions = None
+        self.total_tokens_seen = 0
+        super().reset()
 
     def get_max_length(self) -> int:
         return self.heavy_hitter_tokens + self.recent_window_tokens

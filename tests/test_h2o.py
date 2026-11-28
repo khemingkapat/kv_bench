@@ -319,6 +319,15 @@ class TestH2OTechnique(unittest.TestCase):
         self.assertEqual(res.overall_effective_bitwidth, 8.0)
         self.assertIsNotNone(res.session_retention_ratios)
 
+    def test_h2o_gpu_topk_matches_boundary_helper(self):
+        from src.techniques.h2o import compute_h2o_boundaries, compute_h2o_retained_indices_gpu
+
+        torch.manual_seed(99)
+        scores = torch.rand(1, 4, 48, dtype=torch.float32)
+        b_cpu = compute_h2o_boundaries(48, cumulative_scores=scores, heavy_hitter_tokens=8, recent_window_tokens=16)
+        idx_gpu = compute_h2o_retained_indices_gpu(48, cumulative_scores=scores, heavy_hitter_tokens=8, recent_window_tokens=16)
+        self.assertEqual(idx_gpu.tolist(), b_cpu.retained_indices)
+
 
 if __name__ == "__main__":
     unittest.main()
