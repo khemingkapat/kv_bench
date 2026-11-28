@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -123,16 +125,22 @@ def unpack_int4(packed_tensor: "torch.Tensor", original_dim: int) -> "torch.Tens
     if torch is None:
         raise RuntimeError("PyTorch is required for unpack_int4")
 
-    low_nibble = (packed_tensor & 0x0F).to(torch.int8) - 8
-    high_nibble = ((packed_tensor >> 4) & 0x0F).to(torch.int8) - 8
+    if packed_tensor.ndim < 1:
+        raise ValueError(f"packed_tensor must have at least 1 dimension, got {packed_tensor.ndim}")
+    if packed_tensor.dtype != torch.uint8:
+        raise ValueError(f"packed_tensor must have dtype torch.uint8, got {packed_tensor.dtype}")
+    expected_dim = packed_tensor.size(-1) * 2
+    if original_dim != expected_dim:
+        raise ValueError(
+            f"original_dim ({original_dim}) must equal packed_tensor.size(-1) * 2 ({expected_dim})"
+        )
 
-    # Interleave low and high nibbles back to original dimension
-    shape = list(packed_tensor.shape)
-    shape[-1] = original_dim
-    unpacked = torch.empty(shape, dtype=torch.int8, device=packed_tensor.device)
-    unpacked[..., 0::2] = low_nibble
-    unpacked[..., 1::2] = high_nibble
-    return unpacked
+    return (
+        torch.stack((packed_tensor & 0x0F, packed_tensor >> 4), dim=-1)
+        .reshape(*packed_tensor.shape[:-1], original_dim)
+        .view(torch.int8)
+        .sub_(8)
+    )
 
 
 def quantize_kv_int4(
@@ -185,6 +193,41 @@ def quantize_kv_int4(
     return packed, scale
 
 
+_DEQUANT_COMPILED_FN: Any = None
+_COMPILE_FAILED: bool = False
+
+
+def _reset_dequant_compile_state() -> None:
+    """Reset cached compiled dequantization kernel and failure flag."""
+    global _DEQUANT_COMPILED_FN, _COMPILE_FAILED
+    _DEQUANT_COMPILED_FN = None
+    _COMPILE_FAILED = False
+
+
+def _should_use_compile(packed_tensor: Any) -> bool:
+    """Return True only when packed_tensor is on CUDA and QSERVE_ENABLE_COMPILE=1."""
+    return (
+        bool(getattr(packed_tensor, "is_cuda", False))
+        and os.environ.get("QSERVE_ENABLE_COMPILE", "0") == "1"
+    )
+
+
+def _dequantize_kv_int4_impl(
+    packed_tensor: "torch.Tensor",
+    scales: "torch.Tensor",
+    original_dtype: "torch.dtype",
+    group_size: int,
+) -> "torch.Tensor":
+    """Unified dequantization implementation returning a fresh tensor in original_dtype."""
+    packed_dim = packed_tensor.size(-1)
+    original_dim = packed_dim * 2
+    num_groups = original_dim // group_size
+
+    unpacked = unpack_int4(packed_tensor, original_dim).to(original_dtype)
+    grouped = unpacked.reshape(*packed_tensor.shape[:-1], num_groups, group_size)
+    return (grouped * scales.to(original_dtype)).reshape(*packed_tensor.shape[:-1], original_dim)
+
+
 def dequantize_kv_int4(
     packed_tensor: "torch.Tensor",
     scales: "torch.Tensor",
@@ -195,14 +238,59 @@ def dequantize_kv_int4(
     if torch is None:
         raise RuntimeError("PyTorch is required for dequantize_kv_int4")
 
-    packed_dim = packed_tensor.size(-1)
-    original_dim = packed_dim * 2
+    if packed_tensor.ndim < 1:
+        raise ValueError(f"packed_tensor must have at least 1 dimension, got {packed_tensor.ndim}")
+    if packed_tensor.dtype != torch.uint8:
+        raise ValueError(f"packed_tensor must have dtype torch.uint8, got {packed_tensor.dtype}")
+    if not isinstance(original_dtype, torch.dtype) or not original_dtype.is_floating_point:
+        raise ValueError(f"original_dtype must be a floating-point torch.dtype, got {original_dtype}")
+    if group_size <= 0:
+        raise ValueError(f"group_size must be positive, got {group_size}")
+
+    original_dim = packed_tensor.size(-1) * 2
+    if original_dim % group_size != 0:
+        raise ValueError(
+            f"original_dim ({original_dim}) must be divisible by group_size ({group_size})"
+        )
     num_groups = original_dim // group_size
 
-    unpacked = unpack_int4(packed_tensor, original_dim).to(original_dtype)
-    grouped = unpacked.reshape(*unpacked.shape[:-1], num_groups, group_size)
-    dequantized = (grouped * scales).reshape(*unpacked.shape[:-1], original_dim)
-    return dequantized.to(original_dtype)
+    if scales.ndim != packed_tensor.ndim + 1 or tuple(scales.shape[-2:]) != (num_groups, 1):
+        raise ValueError(
+            f"scales must have shape (*, {num_groups}, 1) with ndim {packed_tensor.ndim + 1}, "
+            f"got {tuple(scales.shape)}"
+        )
+    for s_dim, p_dim in zip(scales.shape[:-2], packed_tensor.shape[:-1]):
+        if s_dim != 1 and s_dim != p_dim:
+            raise ValueError(
+                f"scales leading dims {tuple(scales.shape[:-2])} are incompatible with "
+                f"packed_tensor dims {tuple(packed_tensor.shape[:-1])}"
+            )
+
+    global _DEQUANT_COMPILED_FN, _COMPILE_FAILED
+    if _should_use_compile(packed_tensor) and not _COMPILE_FAILED:
+        if _DEQUANT_COMPILED_FN is None:
+            try:
+                _DEQUANT_COMPILED_FN = torch.compile(_dequantize_kv_int4_impl, dynamic=True)
+            except Exception as exc:
+                _COMPILE_FAILED = True
+                warnings.warn(
+                    f"torch.compile failed for dequantize_kv_int4; falling back to eager mode: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return _dequantize_kv_int4_impl(packed_tensor, scales, original_dtype, group_size)
+        try:
+            return _DEQUANT_COMPILED_FN(packed_tensor, scales, original_dtype, group_size)
+        except Exception as exc:
+            _COMPILE_FAILED = True
+            _DEQUANT_COMPILED_FN = None
+            warnings.warn(
+                f"Compiled dequantize_kv_int4 execution failed; falling back to eager mode: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    return _dequantize_kv_int4_impl(packed_tensor, scales, original_dtype, group_size)
 
 
 def compute_gqa_qserve_attention(
@@ -310,6 +398,22 @@ class QServeKV4Technique(Technique):
     def setup(self) -> None:
         self._sample_count = 0
         self._accum_quantized_bytes = 0
+        if (
+            torch is not None
+            and torch.cuda.is_available()
+            and os.environ.get("QSERVE_ENABLE_COMPILE", "0") == "1"
+            and self.group_size % 2 == 0
+        ):
+            tiny_packed = torch.zeros(
+                (1, 1, 1, self.group_size // 2), dtype=torch.uint8, device="cuda"
+            )
+            tiny_scales = torch.ones((1, 1, 1, 1, 1), dtype=torch.bfloat16, device="cuda")
+            dequantize_kv_int4(
+                tiny_packed,
+                tiny_scales,
+                original_dtype=torch.bfloat16,
+                group_size=self.group_size,
+            )
 
     def on_sample_complete(self, cache: Any) -> None:
         if cache is None:

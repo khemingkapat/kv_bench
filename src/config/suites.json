@@ -1,34 +1,131 @@
 {
   "baseline": {
-    "techniques": ["baseline"],
+    "techniques": [
+      "baseline"
+    ],
     "skip_hardware_sweeps": false,
     "force_longmem_ref": true,
     "run_verify": true,
     "run_longmem": true,
     "run_niah": false,
-    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
-    "eval_contexts": [32768]
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ]
   },
   "wp3_fixed": {
-    "techniques": ["qserve_kv4", "headq", "cachegen", "arkvale", "epicache"],
+    "techniques": [
+      "qserve_kv4",
+      "headq",
+      "cachegen",
+      "arkvale",
+      "epicache"
+    ],
     "skip_hardware_sweeps": false,
     "force_longmem_ref": false,
     "run_verify": true,
     "run_longmem": true,
     "run_niah": true,
-    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
-    "eval_contexts": [32768],
-    "niah_contexts": [2048, 4096]
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "fix_headq": {
+    "techniques": [
+      "headq"
+    ],
+    "skip_hardware_sweeps": false,
+    "skip_existing": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "fix_epicache": {
+    "techniques": [
+      "epicache"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "skip_existing": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   },
   "settled_eval": {
-    "techniques": ["h2o", "streamingllm", "infinigen", "flexgen_kv", "turboquant", "shadowkv"],
+    "techniques": [
+      "h2o",
+      "streamingllm",
+      "infinigen",
+      "flexgen_kv",
+      "turboquant",
+      "shadowkv"
+    ],
     "skip_hardware_sweeps": true,
     "force_longmem_ref": false,
     "run_verify": true,
     "run_longmem": true,
     "run_niah": true,
-    "eval_contexts": [32768],
-    "niah_contexts": [2048, 4096]
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   },
   "all": {
     "techniques": [
@@ -49,19 +146,43 @@
     "run_verify": true,
     "run_longmem": true,
     "run_niah": true,
-    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768],
-    "eval_contexts": [32768],
-    "niah_contexts": [2048, 4096]
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   },
   "wp3_fix_rerun": {
-    "techniques": ["streamingllm", "infinigen"],
+    "techniques": [
+      "streamingllm",
+      "infinigen"
+    ],
     "skip_hardware_sweeps": false,
     "skip_verify": true,
     "skip_longmem": true,
     "skip_niah": true,
     "skip_existing": false,
     "force_longmem_ref": false,
-    "contexts": [512, 1024, 2048, 4096, 8192, 16384, 32768]
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ]
   },
   "longmem_eval": {
     "techniques": [
@@ -83,6 +204,178 @@
     "skip_niah": true,
     "skip_existing": false,
     "force_longmem_ref": true,
-    "eval_contexts": [32768]
+    "eval_contexts": [
+      32768
+    ]
+  },
+  "fix_shadowkv": {
+    "techniques": [
+      "shadowkv"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "fix_arkvale": {
+    "techniques": [
+      "arkvale"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "fix_qserve": {
+    "techniques": [
+      "qserve_kv4"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "fix_turboquant": {
+    "techniques": [
+      "turboquant"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "wp3_all_5_fixes": {
+    "techniques": [
+      "shadowkv",
+      "headq",
+      "arkvale",
+      "qserve_kv4",
+      "turboquant"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
+  },
+  "wp3_all_6_fixes": {
+    "techniques": [
+      "shadowkv",
+      "headq",
+      "arkvale",
+      "qserve_kv4",
+      "turboquant",
+      "epicache"
+    ],
+    "skip_hardware_sweeps": false,
+    "force_longmem_ref": false,
+    "run_verify": true,
+    "run_longmem": true,
+    "run_niah": true,
+    "skip_existing": false,
+    "contexts": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192,
+      16384,
+      32768
+    ],
+    "eval_contexts": [
+      32768
+    ],
+    "niah_contexts": [
+      2048,
+      4096
+    ]
   }
 }

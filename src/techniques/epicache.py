@@ -71,10 +71,12 @@ def evict_block_prefill(
     k_block: "torch.Tensor",
     v_block: "torch.Tensor",
     budget: int,
+    sink_tokens: int = 4,
+    recent_window: int = 512,
 ) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
     """Perform block-wise token eviction during prefill to cap peak GPU memory.
 
-    Retains the attention sink (token 0) and the top tokens ranked by L2 Key magnitude.
+    Retains attention sink tokens, a recent sliding window, and top middle tokens ranked by L2 Key norm.
 
     Returns:
         Tuple of (k_retained, v_retained, retained_indices).
@@ -82,20 +84,42 @@ def evict_block_prefill(
     if torch is None:
         raise RuntimeError("PyTorch is required for evict_block_prefill")
 
+    budget = int(budget)
+    sink_tokens = int(sink_tokens)
+    recent_window = int(recent_window)
+    if budget <= 0:
+        raise ValueError(f"budget must be positive, got {budget}")
+    if sink_tokens < 0:
+        raise ValueError(f"sink_tokens must be non-negative, got {sink_tokens}")
+    if recent_window < 0:
+        raise ValueError(f"recent_window must be non-negative, got {recent_window}")
+
     seq_len = k_block.size(-2)
     if seq_len <= budget:
         indices = torch.arange(seq_len, device=k_block.device)
         return k_block, v_block, indices
 
-    key_scores = k_block.float().norm(p=2, dim=-1).mean(dim=(0, 1))
-    k_top = max(1, budget - 1)
-    _, top_idx = torch.topk(key_scores[1:], k=min(k_top, seq_len - 1))
-    top_idx = top_idx + 1
-    retained_idx = torch.unique(torch.cat([torch.tensor([0], device=top_idx.device), top_idx]))
+    actual_sink = min(sink_tokens, budget)
+    actual_recent = min(recent_window, budget - actual_sink)
+    middle_budget = budget - actual_sink - actual_recent
 
-    if retained_idx.numel() > budget:
-        retained_idx = retained_idx[:budget]
-    retained_idx = torch.sort(retained_idx).values
+    parts: list["torch.Tensor"] = []
+    if actual_sink > 0:
+        parts.append(torch.arange(actual_sink, device=k_block.device))
+    if middle_budget > 0:
+        middle_end = seq_len - actual_recent
+        key_scores = (
+            k_block[:, :, actual_sink:middle_end, :]
+            .float()
+            .norm(p=2, dim=-1)
+            .mean(dim=(0, 1))
+        )
+        _, top_idx = torch.topk(key_scores, k=middle_budget)
+        parts.append(top_idx + actual_sink)
+    if actual_recent > 0:
+        parts.append(torch.arange(seq_len - actual_recent, seq_len, device=k_block.device))
+
+    retained_idx = torch.sort(torch.cat(parts)).values
 
     k_retained = k_block[:, :, retained_idx, :]
     v_retained = v_block[:, :, retained_idx, :]
@@ -170,6 +194,8 @@ class EpiCacheTechnique(Technique):
         episode_budget_tokens: int = 1024,
         layer_sensitivity_alpha: float = 2.0,
         block_size: int = 16,
+        sink_tokens: int = 4,
+        recent_window: int = 512,
     ):
         if int(num_episodes) <= 0:
             raise ValueError(f"num_episodes must be positive, got {num_episodes}")
@@ -179,11 +205,17 @@ class EpiCacheTechnique(Technique):
             raise ValueError(f"layer_sensitivity_alpha must be positive, got {layer_sensitivity_alpha}")
         if int(block_size) <= 0:
             raise ValueError(f"block_size must be positive, got {block_size}")
+        if int(sink_tokens) < 0:
+            raise ValueError(f"sink_tokens must be non-negative, got {sink_tokens}")
+        if int(recent_window) < 0:
+            raise ValueError(f"recent_window must be non-negative, got {recent_window}")
 
         self.num_episodes = int(num_episodes)
         self.episode_budget_tokens = int(episode_budget_tokens)
         self.layer_sensitivity_alpha = float(layer_sensitivity_alpha)
         self.block_size = int(block_size)
+        self.sink_tokens = int(sink_tokens)
+        self.recent_window = int(recent_window)
 
     def engine_kwargs(self, context_length: int, max_tokens: int) -> dict[str, Any]:
         """Extra engine kwargs merged into the vLLM / PyTorch constructor."""
@@ -203,6 +235,8 @@ class EpiCacheTechnique(Technique):
         return lambda: EpiCacheCache(
             episode_budget_tokens=self.episode_budget_tokens,
             layer_sensitivity_alpha=self.layer_sensitivity_alpha,
+            sink_tokens=self.sink_tokens,
+            recent_window=self.recent_window,
         )
 
     def setup(self) -> None:
@@ -232,7 +266,9 @@ class EpiCacheTechnique(Technique):
             "episode_budget_tokens": self.episode_budget_tokens,
             "layer_sensitivity_alpha": self.layer_sensitivity_alpha,
             "block_size": self.block_size,
+            "sink_tokens": self.sink_tokens,
+            "recent_window": self.recent_window,
             "active_retained_tokens": retained_tokens,
             "block_wise_prefill_active": True,
-            "episodic_routing_active": True,
+            "episodic_routing_active": False,
         }
